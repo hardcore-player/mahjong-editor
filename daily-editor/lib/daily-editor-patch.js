@@ -837,60 +837,60 @@
 
 
 
-    window.paintAt = function (col, row) {
-
-        if (state.brush === 'eraser') {
-
-            const layer = state.layers[state.currentLayer];
-
-            const key = `${row},${col}`;
-
-            const mcol = mirrorCol(col, state.currentLayer);
-
-            const mkey = `${row},${mcol}`;
-
-            delete layer.tiles[key];
-
-            if (state.symmetric && mcol !== col) delete layer.tiles[mkey];
-
-            draw();
-
-            updateUI();
-
-            return;
-
-        }
-
-        if (state.brush === 'spitter' || state.brush === 'disc' || state.brush === 'rotation') return;
-
-        orig.paintAt.call(this, col, row);
-
+    function paintAtDaily(col, row) {
         const layer = state.layers[state.currentLayer];
+        if (!layer || col < -5 || col > 5 || row < -8 || row > 6) return;
 
         const key = `${row},${col}`;
+        const mcol = mirrorCol(col, state.currentLayer);
+        const mkey = `${row},${mcol}`;
 
-        const cell = layer.tiles[key];
-
-        if (cell && (cell.type === 'normal' || cell.type === 'dark') && cell.typeId == null && state.brush === 'normal') {
-
-            cell.typeId = selectedTypeId;
-
+        if (state.brush === 'eraser' || state.paintMode === 'remove') {
+            delete layer.tiles[key];
+            if (state.symmetric && mcol !== col) delete layer.tiles[mkey];
+            draw();
+            updateUI();
+            return;
         }
 
-        const mcol = mirrorCol(col, state.currentLayer);
+        if (state.brush !== 'normal' && state.brush !== 'dark') return;
+
+        if (!isPlaceable(layer, key)) return;
+        if (state.symmetric && mcol !== col && !isPlaceable(layer, mkey)) return;
+
+        const newCells = tileOccupiesCells(key);
+        if (layer.tiles[key]) {
+            const oldCells = tileOccupiesCells(key);
+            if (![...newCells].every((c) => oldCells.has(c))) return;
+        }
+        if (state.symmetric && mcol !== col && layer.tiles[mkey]) {
+            const oldCells = tileOccupiesCells(mkey);
+            if (![...tileOccupiesCells(mkey)].every((c) => oldCells.has(c))) return;
+        }
+
+        const existing = layer.tiles[key];
+        const tileData = {
+            type: state.brush,
+            typeId: existing?.typeId != null ? existing.typeId : selectedTypeId,
+        };
+        if (existing?._docId != null) tileData._docId = existing._docId;
+
+        layer.tiles[key] = tileData;
 
         if (state.symmetric && mcol !== col) {
-
-            const mcell = layer.tiles[`${row},${mcol}`];
-
-            if (mcell && mcell.type === 'normal' && mcell.typeId == null) {
-
-                mcell.typeId = selectedTypeId;
-
-            }
-
+            const mExisting = layer.tiles[mkey];
+            const mTile = { ...tileData };
+            if (mExisting?._docId != null) mTile._docId = mExisting._docId;
+            layer.tiles[mkey] = mTile;
         }
 
+        draw();
+        updateUI();
+    }
+
+    window.paintAt = function (col, row) {
+        if (state.brush === 'spitter' || state.brush === 'disc' || state.brush === 'rotation') return;
+        paintAtDaily(col, row);
     };
 
 
