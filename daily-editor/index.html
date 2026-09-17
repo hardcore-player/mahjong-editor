@@ -1,0 +1,3914 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>麻将关卡编辑器 v4.0 · std 坐标（row=上下/纵, col=左右/横）</title>
+<style>
+  /* ===== 设计令牌（与批量工具页同源） ===== */
+  :root {
+    --bg:#f4f1ea; --card:#fff; --ink:#3a2e1f; --sub:#8a7a5f;
+    --line:#e5ddcc; --line-soft:#efe8d8;
+    --accent:#b8860b; --accent2:#8b5a2b; --accent-bg:#f6ecd8;
+    --danger:#c0453e; --danger-bg:#f9e9e8; --ok:#2e7d32;
+    --radius:10px; --shadow:0 1px 3px rgba(58,46,31,.08);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--ink);
+    display: flex; flex-direction: column;
+    height: 100vh; overflow: hidden;
+    font-size: 13px;
+  }
+  button { font: inherit; cursor: pointer; }
+  input, select { font: inherit; color: var(--ink); }
+
+  /* ===== 顶栏 ===== */
+  .topbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    z-index: 10; flex-shrink: 0;
+  }
+  .brand { font-size: 15px; font-weight: 700; white-space: nowrap; }
+  .brand .ver { font-size: 11px; color: var(--sub); font-weight: 400; margin-left: 4px; }
+  .tb-group { display: flex; align-items: center; gap: 6px; padding-left: 10px; border-left: 1px solid var(--line-soft); }
+  .tb-spacer { flex: 1; }
+
+  .tbtn {
+    padding: 6px 12px; border-radius: 7px;
+    background: #fbf8f2; color: var(--ink);
+    border: 1px solid var(--line);
+    font-size: 12px; white-space: nowrap;
+    transition: all .12s;
+  }
+  .tbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent2); }
+  .tbtn:disabled { opacity: .4; cursor: not-allowed; }
+  .tbtn.danger { color: var(--danger); }
+  .tbtn.danger:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-bg); }
+  .tbtn.armed {
+    background: var(--danger) !important; border-color: var(--danger) !important;
+    color: #fff !important; animation: pulse .9s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: .65; } }
+
+  /* 顶栏小开关 */
+  .chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 9px; border-radius: 999px;
+    border: 1px solid var(--line); background: #fbf8f2;
+    font-size: 11px; color: var(--sub); cursor: pointer;
+    user-select: none; white-space: nowrap;
+    transition: all .12s;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip.on { background: var(--accent-bg); border-color: var(--accent); color: var(--accent2); font-weight: 600; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: #d8cfbc; }
+  .chip.on .dot { background: var(--accent); }
+
+  /* ===== 主体三栏 ===== */
+  .body { flex: 1; display: flex; overflow: hidden; overflow-x: auto; }
+
+  /* ---- 左侧栏 ---- */
+  .sidebar {
+    width: 264px; flex-shrink: 0;
+    padding: 10px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    overflow: hidden; flex-shrink: 0;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px; cursor: pointer; user-select: none;
+    font-size: 13px; font-weight: 700;
+  }
+  .card-head:hover { background: #fbf8f2; }
+  .card-head .chev { color: var(--sub); font-size: 11px; transition: transform .15s; }
+  .card.collapsed .card-head .chev { transform: rotate(-90deg); }
+  .card-body { padding: 4px 12px 12px; }
+  .card.collapsed .card-body { display: none; }
+  .card-sub { font-size: 11px; color: var(--sub); margin: 10px 0 5px; font-weight: 600; }
+  .card-sub:first-child { margin-top: 2px; }
+
+  .layer-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .layer-item {
+    display: flex; align-items: center;
+    padding: 7px 10px;
+    background: #fbf8f2; border: 1px solid var(--line-soft);
+    border-radius: 7px; cursor: pointer; font-size: 12px;
+    transition: all .12s;
+  }
+  .layer-item:hover { border-color: var(--accent); }
+  .layer-item.active {
+    background: var(--accent-bg); border-color: var(--accent);
+    box-shadow: inset 3px 0 0 var(--accent);
+    font-weight: 700; color: var(--accent2);
+  }
+  .layer-item .lbl { flex: 1; }
+  .layer-item .cnt { font-size: 11px; color: var(--sub); font-weight: 400; }
+
+  .row-btns { display: flex; gap: 5px; }
+  .row-btns .sbtn { flex: 1; }
+  .sbtn {
+    padding: 6px 8px; border-radius: 7px;
+    background: #fbf8f2; border: 1px solid var(--line);
+    font-size: 12px; color: var(--ink); white-space: nowrap;
+    transition: all .12s;
+  }
+  .sbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent2); }
+  .sbtn:disabled { opacity: .4; cursor: not-allowed; }
+  .sbtn.primary {
+    background: linear-gradient(#c9973a, #b07a22); border-color: #b07a22;
+    color: #fff; font-weight: 600;
+  }
+  .sbtn.primary:hover:not(:disabled) { filter: brightness(1.06); color: #fff; }
+  .sbtn.danger { color: var(--danger); }
+  .sbtn.danger:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-bg); }
+  .sbtn.armed {
+    background: var(--danger) !important; border-color: var(--danger) !important;
+    color: #fff !important; animation: pulse .9s ease-in-out infinite;
+  }
+  .sbtn.block { display: block; width: 100%; margin-top: 5px; }
+
+  .brush-group { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+  .brush-btn {
+    padding: 9px 4px; font-size: 12px; text-align: center;
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-radius: 7px; cursor: pointer; transition: all .12s;
+  }
+  .brush-btn:hover { border-color: var(--accent); }
+  .brush-btn.active {
+    background: var(--accent-bg); border-color: var(--accent);
+    color: var(--accent2); font-weight: 700;
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  .dir-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; width: 120px; margin: 0 auto; }
+  .dir-btn {
+    padding: 6px 0; text-align: center;
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  .dir-btn:hover { border-color: var(--accent); }
+  .dir-btn.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent2); font-weight: 700; }
+
+  .field-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 0; font-size: 12px;
+  }
+  .field-row > span { color: var(--sub); white-space: nowrap; }
+  .field-row input[type="number"] {
+    width: 52px; padding: 4px 6px;
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-radius: 6px; font-size: 12px;
+  }
+  .field-row select {
+    flex: 1; padding: 5px 6px;
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-radius: 6px; font-size: 12px;
+  }
+  .field-row .sep { opacity: .5; }
+
+  .switch-row select { flex: 1; margin-left: 8px; max-width: 140px; }
+  .slider-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+  .slider-row .slabel { width: 70px; flex-shrink: 0; color: var(--sub); }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .slider-row .sval { width: 42px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; font-size: 13px; color: var(--accent2); }
+  .hint { font-size: 10px; color: var(--sub); margin: 2px 0 8px; line-height: 1.4; }
+  .toggle {
+    width: 34px; height: 19px; flex-shrink: 0;
+    background: #e0d7c4; border-radius: 10px;
+    position: relative; cursor: pointer;
+    transition: background .15s;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle::after {
+    content: ''; position: absolute;
+    width: 15px; height: 15px;
+    background: #fff; border-radius: 50%;
+    top: 2px; left: 2px; transition: left .15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  }
+  .toggle.on::after { left: 17px; }
+
+  .tab-bar { display: flex; gap: 4px; margin-bottom: 10px; }
+  .tab-btn {
+    flex: 1; padding: 7px 4px; font-size: 11px;
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; color: var(--sub);
+    transition: all .12s;
+  }
+  .tab-btn:hover { border-color: var(--accent); }
+  .tab-btn.active {
+    background: var(--accent-bg); border-color: var(--accent);
+    color: var(--accent2); font-weight: 600;
+  }
+  .tab-content.hidden { display: none; }
+    background: #fbf8f2; border: 1px solid var(--line-soft);
+    padding: 8px 10px; border-radius: 7px;
+    font-size: 11px; line-height: 1.7; color: var(--sub);
+    margin-top: 8px;
+    height: 64px; /* 固定高度，不随内容变化 */
+    overflow-y: auto;
+  }
+  .good { color: var(--ok); }
+  .warn { color: #c97a1f; font-weight: 600; }
+  .bad { color: var(--danger); }
+
+  .layer-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; }
+  .layer-legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--sub); }
+  .layer-swatch { width: 16px; height: 11px; border: 1px solid rgba(0,0,0,.15); border-radius: 2px; }
+
+  /* ---- 区域拉伸条 ---- */
+  .divider {
+    width: 6px; flex-shrink: 0;
+    cursor: col-resize;
+    background: transparent;
+    position: relative; z-index: 5;
+    transition: background .12s;
+  }
+  .divider:hover, .divider.dragging { background: var(--line); }
+  .divider::after {
+    content: ''; position: absolute; left: 2px; top: 0; bottom: 0;
+    width: 2px; background: var(--line); opacity: 0;
+    transition: opacity .12s;
+  }
+  .divider:hover::after, .divider.dragging::after { opacity: 1; }
+  body.dragging-h { cursor: col-resize; user-select: none; }
+  body.dragging-h .divider { background: var(--line); }
+  body:has(.preview-panel.collapsed) #divPrev { display: none; }
+
+  /* ---- 保存到工作台（预览面板内） ---- */
+  .wb-savebox {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .wb-save-title { font-size: 11px; color: var(--sub); margin-bottom: 6px; }
+  .wb-save-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .wb-save-row:last-child { margin-bottom: 0; }
+  .wb-save-row input {
+    padding: 5px 8px;
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-radius: 6px; font-size: 12px; min-width: 0;
+  }
+  #wbPass { width: 110px; flex-shrink: 0; }
+  #wbSaveName { flex: 1; min-width: 0; }
+  #wbNewOrder { width: 48px; flex-shrink: 0; }
+  .wb-save-row label { display: flex; align-items: center; gap: 3px; font-size: 12px; color: var(--sub); white-space: nowrap; font-weight: 600; }
+  .wb-save-spacer { flex: 1; }
+  .wb-hint { font-size: 10px; color: var(--sub); margin-top: 4px; line-height: 1.6; }
+    font-size: 11px; color: var(--sub);
+    margin-top: 6px; padding: 4px 8px;
+    background: #fbf8f2; border: 1px solid var(--line-soft);
+    border-radius: 6px;
+  }
+  .wb-status.connected { color: var(--ok); }
+  .wb-status.error { color: var(--danger); }
+  .wb-hint { font-size: 10px; color: var(--sub); margin-top: 5px; line-height: 1.6; }
+
+  /* ---- 画布区 ---- */
+  .canvas-area { flex: 1; min-width: 300px; display: flex; flex-direction: column; overflow: hidden; }
+  .canvas-wrap {
+    flex: 1; position: relative; overflow: hidden;
+    background:
+      radial-gradient(ellipse at center, #f0ead9 0%, #e6deca 100%);
+  }
+  .canvas-wrap.panning { cursor: grab; }
+  .canvas-wrap.panning:active { cursor: grabbing; }
+  canvas { display: block; cursor: crosshair; }
+
+  .statusbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 6px 14px;
+    background: var(--card); border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--sub);
+    flex-shrink: 0; user-select: none;
+  }
+  .statusbar b { color: var(--ink); font-weight: 600; }
+  .statusbar .sep2 { width: 1px; height: 12px; background: var(--line); }
+  .status-support { cursor: pointer; padding: 1px 6px; border-radius: 5px; }
+  .status-support:hover { background: var(--accent-bg); }
+  .status-support.active { background: var(--danger-bg); }
+  .status-spacer { flex: 1; }
+
+  /* ---- 右侧预览面板 ---- */
+  .preview-panel {
+    width: 480px; flex-shrink: 0;
+    background: var(--card);
+    border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    transition: width .25s ease; overflow: hidden;
+  }
+  .preview-panel.collapsed { width: 0; border-left: 0; }
+  .preview-panel.resizing, .sidebar.resizing { transition: none; }
+  .preview-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+    flex-shrink: 0; white-space: nowrap;
+  }
+  .preview-title { display: flex; align-items: baseline; gap: 10px; font-size: 14px; font-weight: 700; }
+  .preview-timer { font-size: 12px; font-weight: 400; color: var(--sub); font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .preview-timer.active { color: var(--accent2); }
+  .preview-empty-hint { font-size: 11px; color: var(--sub); font-weight: 400; }
+  .preview-actions { display: flex; gap: 5px; }
+  .mini-btn {
+    padding: 5px 11px;
+    background: #fbf8f2; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px;
+    font-size: 11px; white-space: nowrap;
+    transition: all .12s;
+  }
+  .mini-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent2); }
+  .mini-btn.primary {
+    background: linear-gradient(#c9973a, #b07a22);
+    border-color: #b07a22; color: #fff; font-weight: 600;
+  }
+  .mini-btn.primary:hover:not(:disabled) { filter: brightness(1.06); color: #fff; }
+  .mini-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .preview-stats {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    padding: 8px 14px; font-size: 11px; color: var(--sub);
+    border-bottom: 1px solid var(--line); flex-shrink: 0; white-space: nowrap;
+  }
+  .preview-stats span { background: #fbf8f2; border: 1px solid var(--line-soft); padding: 3px 8px; border-radius: 5px; }
+  .preview-stats span.good { color: var(--ok); font-weight: 700; }
+  .preview-stats span sub { font-size: 9px; opacity: .6; margin-left: 1px; }
+  .play-history {
+    padding: 8px 14px; border-bottom: 1px solid var(--line);
+    background: #fbf8f2; font-size: 11px; color: var(--sub); flex-shrink: 0;
+  }
+  .ph-title { margin-bottom: 4px; }
+  .ph-title b { color: var(--accent2); }
+  .ph-row { display: flex; justify-content: space-between; gap: 8px; opacity: 0.85; }
+  .ph-row span:first-child { color: var(--sub); }
+
+  .results-section { border-bottom: 1px solid var(--line); display: flex; flex-direction: column; flex-shrink: 0; }
+  .results-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 14px 4px; font-size: 12px; font-weight: 700; white-space: nowrap;
+  }
+  .results-head b { color: var(--accent2); }
+  .results-actions { display: flex; gap: 5px; }
+  .results-list {
+    max-height: 200px; overflow-y: auto;
+    padding: 4px 10px 10px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .result-item {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+    background: #fbf8f2; border: 1px solid var(--line-soft);
+    border-radius: 7px; padding: 5px 8px;
+    font-size: 11px; cursor: pointer;
+    transition: all .12s;
+  }
+  .result-item:hover { border-color: var(--accent); }
+  .result-item.active { border-color: var(--accent); background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  .result-item .ri-idx { color: var(--sub); font-size: 10px; width: 24px; }
+  .result-item .ri-score { font-weight: 700; color: var(--accent2); min-width: 46px; }
+  .result-item .ri-meta { flex: 0 0 auto; color: var(--sub); font-size: 10px; white-space: nowrap; }
+  .result-item .ri-params {
+    flex: 0 0 auto;
+    color: var(--accent2); font-size: 10px; font-weight: 600;
+    background: var(--accent-bg); border: 1px solid var(--accent);
+    border-radius: 4px; padding: 1px 6px;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .result-item .ri-params::before { content: '参数 '; color: var(--sub); font-weight: 400; }
+  .result-item .ri-hooks { flex: 1 1 auto; min-width: 0; text-align: right; color: var(--sub); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .result-item .ri-actions { display: flex; gap: 4px; margin-left: auto; }
+  .result-item .ri-actions button {
+    padding: 3px 7px;
+    background: #fff; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 5px;
+    font-size: 10px;
+  }
+  .result-item .ri-actions button:hover { border-color: var(--accent); color: var(--accent2); }
+  .result-item .ri-actions button.primary { background: var(--accent-bg); border-color: var(--accent); color: var(--accent2); font-weight: 600; }
+
+  .preview-iframe-wrap { flex: 1; position: relative; overflow: hidden; }
+  .preview-iframe-wrap iframe { width: 100%; height: 100%; border: 0; }
+  .game-start-overlay {
+    position: absolute; inset: 0; z-index: 6;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(20, 25, 30, 0.55);
+    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+    transition: opacity .2s;
+  }
+  .game-start-overlay.hidden { display: none; }
+  .game-start-btn {
+    padding: 16px 30px; border-radius: 14px;
+    background: linear-gradient(#c9973a, #b07a22); color: #fff;
+    border: none; border-bottom: 4px solid #8b5a2b;
+    font-size: 16px; font-weight: 700; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(58,46,31,.4);
+    letter-spacing: .5px; transition: transform .12s, filter .12s;
+  }
+  .game-start-btn:hover { filter: brightness(1.08); }
+  .game-start-btn:active { transform: translateY(2px); }
+  .preview-placeholder {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg);
+    pointer-events: none; transition: opacity .2s;
+  }
+  .preview-placeholder.hidden { opacity: 0; }
+  .placeholder-card { text-align: center; color: var(--sub); padding: 0 30px; }
+  .placeholder-icon { font-size: 44px; margin-bottom: 12px; }
+  .placeholder-text { font-size: 14px; margin-bottom: 6px; color: var(--ink); }
+  .placeholder-sub { font-size: 11px; line-height: 1.8; }
+
+  /* ---- Toast ---- */
+  .toast-wrap {
+    position: fixed; right: 16px; bottom: 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    z-index: 100; pointer-events: none;
+  }
+  .toast {
+    background: var(--card); border: 1px solid var(--line);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px; box-shadow: 0 4px 14px rgba(58,46,31,.18);
+    padding: 9px 14px; font-size: 12px; color: var(--ink);
+    max-width: 320px;
+    animation: toast-in .18s ease-out;
+  }
+  .toast.err { border-left-color: var(--danger); }
+  .toast.ok { border-left-color: var(--ok); }
+  .toast.out { opacity: 0; transform: translateY(6px); transition: all .25s; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+  /* ---- 版本更新提示横幅 ---- */
+  .version-banner {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 200; max-width: 90vw;
+    background: linear-gradient(#c9973a, #b07a22); color: #fff;
+    padding: 12px 16px; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.25);
+    font-size: 13px; line-height: 1.6; animation: toast-in .2s ease-out;
+  }
+  .vb-head { font-weight: 600; margin-bottom: 6px; }
+  .vb-head code { background: rgba(255,255,255,.25); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .vb-notes { background: rgba(255,255,255,.15); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 12px; line-height: 1.7; max-width: 420px; }
+  .vb-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .vb-btn { padding: 4px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid rgba(255,255,255,.5); background: transparent; color: #fff; }
+  .vb-btn:hover { background: rgba(255,255,255,.15); }
+  .vb-btn-primary { background: #fff; color: #b07a22; border-color: #fff; font-weight: 600; }
+  .vb-btn-primary:hover { background: #f5f5f5; }
+  .help-pop {
+    position: fixed; top: 48px; right: 12px; z-index: 90;
+    width: 300px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: 0 8px 26px rgba(58,46,31,.2);
+    padding: 14px 16px; font-size: 12px; line-height: 2;
+    display: none;
+  }
+  .help-pop.show { display: block; }
+  .help-pop h4 { font-size: 13px; margin-bottom: 6px; }
+  .help-pop kbd {
+    background: #fbf8f2; border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 4px;
+    padding: 0 5px; font-family: inherit; font-size: 11px;
+    white-space: nowrap;
+  }
+  .help-pop .hrow { display: flex; justify-content: space-between; gap: 10px; }
+  .help-pop .hrow span:last-child { color: var(--sub); }
+  .gen-help-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid var(--accent, #e94560); background: rgba(233,69,96,.1);
+    font-size: 13px; font-weight: 700; cursor: pointer; color: var(--accent, #e94560);
+    margin-left: 8px; flex-shrink: 0; transition: all .15s;
+  }
+  .gen-help-btn:hover { background: var(--accent, #e94560); color: #fff; }
+  .gen-help-pop {
+    position: absolute; z-index: 90;
+    width: 280px;
+    max-height: 70vh;
+    overflow-y: auto;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: 0 8px 26px rgba(58,46,31,.2);
+    padding: 14px 16px; font-size: 12px; line-height: 1.7;
+    display: none;
+  }
+  .gen-help-pop.show { display: block; }
+  .gen-help-pop h4 { font-size: 13px; margin-bottom: 8px; }
+  .gen-help-pop .gh-item { margin-bottom: 10px; }
+  .gen-help-pop .gh-item:last-child { margin-bottom: 0; }
+  .gen-help-pop .gh-title { font-weight: 600; color: var(--text); }
+  .gen-help-pop .gh-desc { color: var(--sub); margin-top: 2px; }
+
+  input[type="file"] { display: none; }
+
+  @media (max-width: 1100px) {
+    .preview-panel { width: 400px; }
+    .brand .ver { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ 顶栏 ============ -->
+<header class="topbar">
+  <div class="brand">🀄 关卡编辑器<span class="ver">v4.0 · std 坐标</span></div>
+  <div class="tb-group">
+    <button class="tbtn" onclick="document.getElementById('fileInput').click()">📂 导入</button>
+    <input type="file" id="fileInput" accept=".json" onchange="importJSON(event)">
+    <button class="tbtn" onclick="exportJSON()">💾 导出</button>
+    <button class="tbtn danger" id="clearBtn" onclick="clearAll(this)">🗑 清空</button>
+  </div>
+  <div class="tb-group">
+    <button class="tbtn" id="undoBtn" onclick="undo()" disabled>↩ 撤销</button>
+    <button class="tbtn" id="redoBtn" onclick="redo()" disabled>↪ 重做</button>
+  </div>
+  <div class="tb-group">
+    <div class="chip on" id="symToggle" onclick="toggleSym()" title="快捷键 S"><span class="dot"></span>对称</div>
+    <div class="chip on" id="allToggle" onclick="toggleAll()" title="快捷键 A"><span class="dot"></span>全部层</div>
+    <div class="chip on" id="snapToggle" onclick="toggleSnap()" title="上层牌必须 4 象限都有支撑"><span class="dot"></span>支撑限制</div>
+    <div class="chip on" id="gridToggle" onclick="toggleGrid()"><span class="dot"></span>网格</div>
+    <div class="chip" id="coordToggle" onclick="toggleCoord()"><span class="dot"></span>坐标</div>
+    <div class="chip" id="typeIdToggle" onclick="toggleTypeId()" title="显示每一张普通牌的牌面 Type ID(导入关卡时保留)"><span class="dot"></span>牌面ID</div>
+  </div>
+  <div class="tb-spacer"></div>
+  <button class="tbtn" onclick="window.open('/workbench.html','_blank')" title="打开关卡工作台（部署版）">📋 工作台</button>
+  <button class="tbtn" onclick="toggleChangelog(event)" title="查看版本变更日志">📜 变更日志</button>
+  <button class="tbtn" onclick="fitView()" title="缩放并居中到完整画布">⤢ 视图重置</button>
+  <button class="tbtn" id="helpBtn" onclick="toggleHelp(event)">？</button>
+</header>
+
+<div class="body">
+  <!-- ============ 左侧栏 ============ -->
+  <aside class="sidebar" id="sidebar">
+
+    <div class="card" id="cardLayers">
+      <div class="card-head" onclick="toggleCard('cardLayers')"><span>🗂 图层</span><span class="chev">▼</span></div>
+      <div class="card-body">
+        <div class="layer-list" id="layerList"></div>
+        <div class="row-btns">
+          <button class="sbtn" onclick="addLayer()">＋ 添加</button>
+          <button class="sbtn" onclick="duplicateLayer()" title="复制当前层为新的一层">⧉ 复制</button>
+          <button class="sbtn danger" id="delLayerBtn" onclick="deleteLayer(this)">－ 删除</button>
+        </div>
+        <div class="layer-legend" id="layerLegend"></div>
+      </div>
+    </div>
+
+    <div class="card" id="cardBrush">
+      <div class="card-head" onclick="toggleCard('cardBrush')"><span>🖌 画笔</span><span class="chev">▼</span></div>
+      <div class="card-body">
+        <div class="brush-group">
+          <div class="brush-btn active" data-brush="normal" onclick="setBrush('normal')">🀫 普通</div>
+          <div class="brush-btn" data-brush="dark" onclick="setBrush('dark')">🂠 暗牌</div>
+          <div class="brush-btn" data-brush="spitter" onclick="setBrush('spitter')">⚙ 吐牌</div>
+          <div class="brush-btn" data-brush="disc" onclick="setBrush('disc')">🟣 圆盘</div>
+          <div class="brush-btn" data-brush="rotation" onclick="setBrush('rotation')">🎡 旋转</div>
+        </div>
+        <div id="spitterPanel" style="display:none; margin-top:10px;">
+          <div class="card-sub">吐牌方向</div>
+          <div class="dir-pad">
+            <div></div>
+            <div class="dir-btn active" data-dir="up" onclick="setSpitterDir('up')">↑</div>
+            <div></div>
+            <div class="dir-btn" data-dir="left" onclick="setSpitterDir('left')">←</div>
+            <div></div>
+            <div class="dir-btn" data-dir="right" onclick="setSpitterDir('right')">→</div>
+            <div></div>
+            <div class="dir-btn" data-dir="down" onclick="setSpitterDir('down')">↓</div>
+            <div></div>
+          </div>
+          <div class="field-row" style="justify-content:center; margin-top:8px;">
+            <span>吐牌次数</span>
+            <input type="number" id="spitterCount" value="2" min="1" max="99">
+          </div>
+        </div>
+        <div id="discPanel" style="display:none; margin-top:10px;">
+          <div class="card-sub">插入到哪两层之间</div>
+          <div class="field-row" style="justify-content:center;">
+            <select id="discGapSelect" onchange="setDiscGap(parseInt(this.value,10))" style="padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:#fbf8f2;">
+              <option value="0">L0 与 L1 之间</option>
+              <option value="1">L1 与 L2 之间</option>
+              <option value="2">L2 与 L3 之间</option>
+              <option value="3">L3 与 L4 之间</option>
+              <option value="4">L4 与 L5 之间</option>
+            </select>
+          </div>
+          <div class="card-sub" style="margin-top:8px;">圆盘半径 = 1 张麻将</div>
+          <div class="card-sub" style="margin-top:4px; color:var(--sub); font-size:11px;">
+            • 选中圆盘画笔后，点棋盘放置；点已有的圆盘可删除<br>
+            • 圆盘盖住下方麻将，被麻将盖住时需先消除上方麻将
+          </div>
+        </div>
+        <div id="rotationPanel" style="display:none; margin-top:10px;">
+          <div class="card-sub">旋转中心（点棋盘设置）</div>
+          <div class="field-row" style="justify-content:center; gap:8px;">
+            <span>行</span><input type="number" id="rotCenterRow" value="-2" style="width:50px;" oninput="draw()">
+            <span>列</span><input type="number" id="rotCenterCol" value="0" style="width:50px;" oninput="draw()">
+          </div>
+          <div class="field-row" style="justify-content:center; margin-top:6px;">
+            <button class="mini-btn" onclick="clearRotationCenter()">❌ 取消旋转</button>
+          </div>
+          <div class="card-sub" style="margin-top:8px;">旋转半径（外圈圈数）</div>
+          <div class="field-row" style="justify-content:center;">
+            <input type="number" id="rotRadius" value="0" min="0" max="8" style="width:60px;" oninput="draw()">
+          </div>
+          <div class="card-sub" style="margin-top:8px;">旋转方向</div>
+          <div class="dir-pad">
+            <div></div>
+            <div class="dir-btn active" data-dir="clockwise" onclick="setRotationDir('clockwise')">↻</div>
+            <div></div>
+            <div></div>
+            <div class="dir-btn" data-dir="counterclockwise" onclick="setRotationDir('counterclockwise')">↺</div>
+            <div></div>
+          </div>
+          <div class="hint">每次点牌进卡槽，外圈按方向旋转一格</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="cardGen">
+      <div class="card-head" onclick="toggleCard('cardGen')"><span>🎯 生成关卡</span><button class="gen-help-btn" onclick="toggleGenHelp(event)" title="查看参数说明">?</button><span class="chev">▼</span></div>
+      <div class="card-body">
+        <!-- Tab 切换 -->
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tabBtnParams" onclick="switchTabTo('params')">参数模式</button>
+          <button class="tab-btn" id="tabBtnDifficulty" onclick="switchTabTo('difficulty')">难度模式</button>
+        </div>
+
+        <!-- Tab 1: 参数模式 -->
+        <div class="tab-content" id="tab-params">
+          <div class="card-sub">目标分数（单关和批量都匹配这个范围）</div>
+          <div class="field-row">
+            <span>目标分数</span>
+            <button class="gen-help-btn" onclick="toggleScoreHelp(event)" title="分数计算公式">?</button>
+            <input type="number" id="scoreMin" value="0" min="0" max="999">
+            <span class="sep">~</span>
+            <input type="number" id="scoreMax" value="999" min="0" max="999">
+          </div>
+          <button class="sbtn block" onclick="probeScoreRange()">📊 探测本底座可出分数</button>
+          <div class="card-sub">结构参数（单关和批量按分数/暗牌过滤；钩子难度由层数自动产生）</div>
+          <div class="slider-row">
+            <span class="slabel">暗牌总数</span>
+            <input type="range" id="darkRatio" min="0" max="50" value="10" step="5" oninput="onGenParamChange()">
+            <span class="sval" id="darkRatioVal">10%</span>
+          </div>
+          <div class="slider-row">
+            <span class="slabel">暗钩比例</span>
+            <input type="range" id="darkCoverage" min="0" max="100" value="100" step="25" oninput="onGenParamChange()">
+            <span class="sval" id="darkCoverageVal">100%</span>
+          </div>
+          <div class="hint">堆层数越多 → 牌埋得越深 → 钩子越难（看生成结果的"均深"）。钩子%不用手动设。</div>
+        </div>
+
+        <!-- Tab 2: 难度模式 -->
+        <div class="tab-content hidden" id="tab-difficulty">
+          <div class="card-sub">难度等级（1=最简单, 10=最难）</div>
+          <div class="slider-row">
+            <span class="slabel">难度</span>
+            <input type="range" id="difficultyLevel" min="1" max="10" value="5" step="1" oninput="onDifficultyChange()">
+            <span class="sval" id="difficultyVal">5</span>
+          </div>
+          <div class="hint">系统自动分配目标分数、暗牌比例；钩子难度由层数/埋深自然决定。</div>
+          <div class="slider-row" style="opacity:.8">
+            <span class="slabel">≈ 目标分数</span>
+            <span class="sval" id="autoScoreVal" style="color:var(--sub)">100~120</span>
+          </div>
+          <div class="slider-row" style="opacity:.8">
+            <span class="slabel">≈ 暗牌总数</span>
+            <span class="sval" id="autoDarkVal" style="color:var(--sub)">10%</span>
+          </div>
+        </div>
+
+        <button class="sbtn primary block" onclick="generateCurrentShape()">🎯 按当前形状生成</button>
+
+        <div class="card-sub">底座堆塔</div>
+        <div class="field-row">
+          <span>堆层数</span>
+          <input type="number" id="stackCount" value="5" min="2" max="7">
+        </div>
+        <div class="hint">这是起始值：生成时会按目标分数自动加减层数来凑分（最终层数可能≠预设）</div>
+        <button class="sbtn primary block" onclick="generateStackFromCurrent()">🏗 按当前底座搭建后生成</button>
+
+        <div class="card-sub">批量</div>
+        <div class="field-row">
+          <span>模式</span>
+          <select id="batchMode">
+            <option value="stack">按底座堆塔</option>
+            <option value="shape">按当前形状</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span>数量</span>
+          <input type="number" id="batchCount" value="5" min="1" max="50">
+        </div>
+        <button class="sbtn block" onclick="batchGenerate()">⚡ 批量生成</button>
+
+        <div class="status-box"><span id="genStatus">就绪</span></div>
+      </div>
+    </div>
+    <div class="gen-help-pop" id="genHelpPop">
+      <h4>生成参数说明</h4>
+      <div class="gh-item">
+        <div class="gh-title">堆层数 & 自动调层（按目标分数）</div>
+        <div class="gh-desc">你设的"堆层数"是起始值。生成时会按目标分数自动加减层数来凑分：目标分数低 → 自动降层（塔更"开"、可点率更高）；目标分数高 → 自动升层（牌埋更深、可点率更低）。所以最终层数可能 ≠ 你预设的层数，属正常，是"分数控制层数"。</div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">钩子难度（已改为自动）</div>
+        <div class="gh-desc">钩子 = 一对同花色里至少一张被埋(上压/左右夹)。堆层数越多 → 埋得越深 → 钩子越难。钩子%由底座深度自然决定，不用手动设，看生成结果的"均深"即可。</div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">暗钩比例</div>
+        <div class="gh-desc">钩子中有多少比例被标成暗牌。100% = 所有钩子都暗，0% = 没有暗钩。暗钩 = 钩子对里深埋的那张恰好是暗牌(看不到花色，难度更高)。</div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">暗牌总数</div>
+        <div class="gh-desc">暗牌占总牌数的比例。0% = 无暗牌（也不会有暗钩）。暗钩 = 这些暗牌里，标在钩子被埋牌上的那部分（由"暗钩比例"决定）。</div>
+      </div>
+    </div>
+    <div class="gen-help-pop" id="scoreHelpPop">
+      <h4>难度分计算公式</h4>
+      <div class="gh-item">
+        <div class="gh-title">难度分 =</div>
+        <div class="gh-desc" style="font-family:monospace; line-height:1.8">
+          (1 - 可点率) × 30<br>
+          + 层数 × 8<br>
+          + min(钩子埋深加权 / 40, 1) × 30<br>
+          + min(暗钩埋深加权 / 40, 1) × 20<br>
+          + min((槽位压力 - 2) / 4, 1) × 30<br>
+          + 队列压力<br>
+          + 5
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">各项含义</div>
+        <div class="gh-desc">
+          <b>可点率</b>:开局时可点牌占总牌数比例。可点=上方无压牌且左右未被夹住。越低越难(大部分牌被压住)。满分 40 分,范围 0~40。<br>
+          <b>层数</b>:最大层号(从 0 开始)。层越多牌越难到达。每层 +8 分,4 层封顶(32 分)。<br>
+          <b>钩子埋深加权</b>:钩子 = 一对里至少一张被埋(上压/左右夹)。每对权重 = 埋得最深那张的埋深 + (双埋则再加另一张埋深)，再乘"所见伴侣加权"(同色露越多越好找 → 打折)。埋深 = 被多少层牌盖住。除以 40 拿满 30 分(浅层塔均深低、深层高，拉开难度)。<br>
+          <b>暗钩埋深加权</b>:钩子对里深埋那张恰好是暗牌(看不到花色)的同规则加权。除以 40 拿满 20 分。<br>
+          <b>槽位压力</b>:最优打法下卡槽最多同时占几个花色位(7 格上限)。值越高容错率越低——走错一步顺序就容易把槽堆满。2 槽起 0 分,每 +1 槽 +7.5 分,6 槽拿满 30 分。这是"消除顺序不对就死局"的核心指标。<br>
+          <b>吐牌机队列压力</b>:只算"实际不可见/不可消"的队列牌贡献。从第 1 张往后找，找到第一张无法立即配对的牌（即它的配对被埋了），它及之后所有牌都算压力。公式:(0.5 + hiddenCount - 1) × 8。如果第 1 张就能立即配对，它就完全不算压力（出牌即消）。每张不可消的队列牌 ≈1 个暗钩贡献难度，第 1 张折半。<br>
+          <b>保底 5 分</b>:确保最低难度也有基础分。
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">设计理由</div>
+        <div class="gh-desc">
+          分母 8 怎么定的:实测 80~110 张的标准关卡,钩子数观测 0~8,8 个封顶正好覆盖。<br>
+          稀缺度加权:避免"1 种牌出 6 张(3 对钩子)"比"3 种牌各出 2 张(3 对钩子)"分数相同——后者实际更难(花色分散)。<br>
+          槽位压力:模拟一个聪明玩家的贪心打法,统计卡槽中最大同时存在的花色数。值接近 7 时,玩家必须严格按正确顺序消除,否则槽位会被"存着等另一半"的牌堆满。<br>
+          吐牌机队列压力:玩家看到第 1 张队列牌后才能意识到"接下来还有几张不知道的"，每一张都增加记忆负担 + 槽位占用风险。第 1 张可见所以折半，后面的全未知所以按完整暗钩算。<br>
+          可点率只拍开局一瞬间,中盘难度不计入(但倒推法保证可解,不会真卡死)。
+        </div>
+      </div>
+    </div>
+
+    <!-- 变更日志弹层 -->
+    <div class="gen-help-pop changelog-pop" id="changelogPop" style="width:420px; max-height:70vh; overflow-y:auto;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <h4 style="margin:0;">📜 变更日志</h4>
+        <button class="sbtn" style="padding:4px 10px; font-size:11px;" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强刷</button>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.6.5 · 2026-09-01</div>
+        <div class="gh-desc">
+          • 回滚 v4.10.6.4 浮点圆心 snap,改回整数 snap。用户反馈"不需要这样,像摆麻将一样按 1 个 cell 为单位的移动":disc hover 应在 cell 边界处跳 1 cell(离散步进,像 tile brush 一样),而不是连续浮点圆心。修正:<code>pixelToCell</code> 去掉 <code>opts.float</code> 分支,统一用 <code>floor((wx-bx)/CELL + 1e-6) - OFFSET</code> 整数 snap(与 tile/spitter/rotation 行为一致);mousemove 不再传 <code>{float}</code>。渲染侧 <code>drawDiscAt</code> 维持 <code>+CELL/2</code>(cell 中心,与 demo 对齐)。代价:cell 边界 click 会让 disc 跳到最近 cell 中心(典型 19 px 步进,跟 tile brush 的 2x2 footprint 跳格一致),用户接受这个 "1 cell 步进" 行为
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.6.4 · 2026-09-01</div>
+        <div class="gh-desc">
+          • 修复 v4.10.6.3 引入的"圆盘放不到正中间,偏上偏左"bug。v4.10.6.3 把 disc 渲染改为 cell-center(+CELL/2)与 demo 对齐,但 <code>pixelToCell</code> 仍是 floor 整数 — 用户点田字中心(w=86,h=104 这种 cell 边界位置)时返回 col=-4(下界 cell),圆盘画在 cell -4 中心(w=66,h=84),偏离点击位置 19 px 偏上偏左。修法:pixelToCell 加 <code>opts.float</code> 参数,圆盘画笔下返回浮点子格坐标 <code>(wx-bx)/CELL - 0.5 - OFFSET</code> — 与 drawDiscAt 的 +CELL/2 公式对齐后,任意 click 位置 round-trip 精确到 0(浮点精度内)。验证:田字中心 click (86,104) → hoverCell (-3.5,-6.5) → drawDiscAt at (86,104) 误差 0 ✓;编辑器-demo 公式对比 8 种 col(整数/半整数)全部对齐 ✓;普通画笔/tile/spitter/rotation 仍用 floor 整数起点(2x2 麻将 footprint 行为不变) ✓
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.6.3 · 2026-09-01</div>
+        <div class="gh-desc">
+          • 修复编辑器圆盘位置与 demo 不一致(相差半格):编辑器 <code>drawDiscAt</code> 用 <code>BOARD_PAD + (col+OFFSET_COL)*CELL</code>(cell 起点)画圆心,而 demo <code>renderDiscs</code> 用 <code>offX + (col-minCol)*cellPx + cellPx/2</code>(cell 中心),两者错位半个 cell。用户在编辑器画一个 disc 走「按当前形状生成」加载 demo,会发现圆盘视觉位置偏半格(尤其水平方向最明显)。修正:编辑器 <code>drawDiscAt</code> 与 <code>drawDiscPreview</code> 圆心统一加 <code>+ CELL/2</code>(与 demo cell-center 公式一致);<code>pixelToCell</code> 同步去掉 disc 画笔专用的 <code>+ 0.5</code> 偏移——hover 用 cell 起点,渲染用 cell 中心,两者公式天然对齐(同一像素落在哪一格 floor 结果不变)。验证:示例_圆盘.json(5 disc 全 col=-4)实测 editor backing pixel x 中心 <code>142.65</code>(= view 变换后 cx=66),与 demo SVG cx <code>176.14</code>(= cell 中心公式)在各自画布上视觉位置完全对应 ✓
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.6.2 · 2026-08-31</div>
+        <div class="gh-desc">
+          • 修复 v4.10.6.1 圆盘 z-index 方向错误:v4.10.6.1 用单个 SVG <code>z-index=50000</code> 永远在最上层,导致 <b>L(N+1) tile 被圆盘压在下面</b>(视觉上"L1 tile 从圆盘后面凸出来")。修正:renderDiscs 改为按 <code>gapLayer</code> 分组、每组一个 SVG,各自 z-index = <code>(gapLayer+1)*1000</code>(tile 用 <code>layer*1000+id</code>,所以 L(N+1) tile 的 z 总 ≥ <code>(N+1)*1000+1</code> &gt; disc 的 z=<code>(N+1)*1000</code>;L(N) tile 的 z ≤ <code>N*1000</code> &lt; <code>(N+1)*1000</code>)。新方案:<b>L(N+1) tile 视觉上压着 disc</b>(tile z &gt; disc z),<b>L(N) tile 视觉上被 disc 覆盖</b>(disc z &gt; tile z),符合"圆盘是两层之间的盖子"语义。同时 disc 半径从 v4.10.6.1 的 <code>2.5 cell</code> 回到 <code>2 cell</code>——因为现在 L(N+1) tile 自然压在 disc 上方,disc 不需要再加大以完全覆盖 L(N+1) tile。验证:DOM 实测 <code>tile z=1~20</code>(L0 tile id 1~20,均 &lt; 1000 → 在 disc 下),<code>tile z=1021~1026</code>(L1 tile,均 &gt; 1000 → 在 disc 上),<code>disc-layer z=1000</code> ✓
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.6.1 · 2026-08-31</div>
+        <div class="gh-desc">
+          • 修复 v4.10.6 圆盘半径不够大导致 L(N+1) tile 4 角凸出 disc 圆外的 bug。根因:disc 半径 <code>2 * cellPx</code>(=2 cell),L(N+1) tile 边长 2 cell 半对角 ≈1.41 cell,加上 layerOffset 让 L(N+1) tile 中心偏离 disc 圆心 <code>sqrt(0.2²+0.2²) = 0.28 cell</code>,L(N+1) tile 边缘最远 ≈1.69 cell > 2 cell 半径 → tile 4 角凸出 disc 圆外约 <b>12.8 px</b>,视觉上"L1 tile 从圆盘下面凸出来"。修正:disc 半径 <code>2 * cellPx</code> → <code>2.5 * cellPx</code>(覆盖 L(N+1) tile 完全 + 7.2 px 安全边距)。实测 6 个 L1 tile × 5 个 disc 共 30 个距离中,所有配对 disc 上方的 L(N+1) tile overlap 从 +12.8 px → <b>-7.2 px</b>(负数=完全在圆内),L1 tile 4 角不再凸出 disc 圆外 ✓
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.6 · 2026-08-31</div>
+        <div class="gh-desc">
+          • 修复工作台预览"每次打开都要等好久才出麻将"问题。<code>closePreview()</code> 原本会 <code>frame.removeAttribute('src')</code> 卸载 demo iframe 并把 <code>demoReady=false</code>,导致每次"关闭→重开"预览都要重新加载整个 <code>/demo/index.html</code>(HTML+CSS+JS 全重),体验非常卡。修正:closePreview 仅隐藏 modal,保留 iframe 与 demoReady 状态;后续预览走 <code>previewLevel</code> 的 <code>else</code> 分支 <code>if (demoReady) sendLevelToDemo(level)</code>,直接 postMessage 发关卡,二次预览实测 0ms 秒开。后台循环 CPU 开销 &lt;1%,换取预览秒开
+          <br>• 修复编辑器生成关卡"圆盘数据丢失"问题。<code>buildEditorShape()</code> 已正确返回 <code>discs</code> 数组,但 <code>tryGen / generateStackFromCurrent / batchGenerate</code> 三处调用都只解构了 <code>{ tiles, specialTiles }</code>、漏了 discs,传给 <code>fillEditorShape / generateStackFromShape</code> 时也没传 discs;生成器内部也未读取/写出 discs。后果:用户用编辑器画了圆盘,点"按当前形状生成"或"按堆塔生成"或"批量生成",输出的关卡 JSON 完全不含 discs 字段——demo 加载后看不到圆盘,圆盘机制完全失效。修正:三处解构均加 <code>discs</code>;生成器三个函数 (<code>fillEditorShape / generateAndFill / generateStackFromShape</code>) 都新增 <code>options.discs</code> 解析并写入返回 level 的 <code>discs</code> 字段,与手画导出链路(<code>level = { ..., discs }</code>)保持一致。验证:画 2 disc 走 <code>fillEditorShape</code> 实测返回 <code>level.discs.length===2</code> ✓
+          <br>• 修复圆盘机制三个 demo 端 bug:<b>①空圆盘不消失</b>。<code>loadLevel</code> 末尾未调 <code>sweepDiscsToFade()</code>,导致用户画了 disc 但上方未放 tile 的关卡加载后,圆盘一直显示不消失(原 sweep 只在消除一张牌后才触发)。修正:loadLevel 末尾调一次 sweep,空 disc 立即开始淡出。<b>②圆盘视觉被上层 tile 盖住</b>。<code>zOffset = (gapLayer+0.5)*0.3*cell*1.5</code> 在 gapLayer=0 时仅向上偏 9px,而 L1 tile 的 layerOffset 是 12px——L1 tile 视觉位置更高,看起来"压在圆盘上"。修正:<code>zOffset = (gapLayer+1)*0.3*cell*1.5</code>,gapLayer=0 时偏 18px,大于 L1 tile 的 12px,圆盘视觉在最上层 tile 之上,符合"盖子"语义。<b>③render 时 board 未 layout 导致 cell 负数</b>。loadLevel 同步调 render,若此时 <code>board.parentElement.clientWidth===0</code> 则 cell 算成负数,SVG circle radius 负数 → 不渲染;tile div width 负数 → CSS fallback 视觉错位。修正:render 顶部若 boardW===0 则 <code>requestAnimationFrame(render)</code> 等下一帧 layout 完成再画。验证:reload 示例关卡 cellPx 从 -7.22 → 40,圆盘 r 从 -14.45 → 80 ✓<br>• 修复圆盘 disc 上方最后一张 tile 进卡槽后该 disc 仍不淡出的 bug。单张 tile 进槽没配对时,<code>checkMatch</code> 不会进入 <code>MATCHED</code> 分支、也就不会调 <code>sweepDiscsToFade</code>,导致该 tile 上方的 disc 永远卡在场上不消失(典型场景:9 张 L0 九宫格 + 1 disc 居中 + 1 张 L1 tile 盖 disc,点 L1 进卡槽)。修正:在 <code>checkMatch()</code> 开头加一次 <code>sweepDiscsToFade()</code>,无论是否配对都先扫一遍 disc——单张进槽让上方最后一张 tile 从 active 移除的场景也能正确触发 disc 淡出。验证:用户场景下点 L1 tile 后 disc alpha 从 0 → 0.13(瞬间)→ 0.29(1.5s 后),确认淡出动画启动 ✓
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.5 · 2026-08-30</div>
+        <div class="gh-desc">
+          • 修复工作台预览试玩"消除一对直接获胜"bug。checkWin 的通关条件原为"麻将全消 <b>OR</b> 圆盘全消"(任一即胜利),消除一对后场上无牌 → allTilesCleared=true → 立刻通关,完全不看 disc 是否还在。修正为"麻将全消 <b>AND</b> 圆盘全消失"(两个必须同时满足),有 disc 的关卡必须等 disc 淡出完成才能通关;同时保留 currentDiscs.length===0 兜底(避免空 disc 关卡卡住)。Preview 实测:mini 关卡(2 牌 + 1 disc)消除一对后 msg 不显示,等 disc 淡出完成才通关 ✓
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.4 · 2026-08-30</div>
+        <div class="gh-desc">
+          • 修复 v4.10.2 引入的"圆盘画在棋盘外"bug:v4.10.2 把 disc.col 从麻将位改为子格坐标时,drawDiscAt 用了 <code>BOARD_PAD + disc.col*CELL</code>,漏了 <code>+DISPLAY_OFFSET_COL</code>。结果 hoverCell.col=5 圆盘画在 cx=6+5*40=206(棋盘外左),而 tile col=5 画在 cx=6+(5+5)*40=406(棋盘右),两者错位 200px=5 子格 — 鼠标在棋盘右下方时圆盘显示在棋盘外左上,看起来像"圆盘在鼠标左上方"。修正:与 tile 渲染一致,圆心 = <code>BOARD_PAD + (disc.col+DISPLAY_OFFSET_COL)*CELL</code>;drawDiscPreview 虚线圆环同步修正
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.3 · 2026-08-30</div>
+        <div class="gh-desc">
+          • 修复 v4.10.2 圆盘画笔圆心偏向鼠标左上方:pixelToCell 在 disc 画笔下从 cell 起点(floor+1e-6)改为 cell 中心(floor+0.5),圆心 hoverCell 落在最近子格中心,鼠标怎么移圆盘都跟着。普通画笔仍用 cell 起点(2x2 麻将 footprint 从起点铺开)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.2 · 2026-08-30</div>
+        <div class="gh-desc">
+          • <b>圆盘坐标语义重定义</b>:disc.row/col 改为"子格坐标(任意整数)"而非"麻将位坐标(仅偶数)"。圆心可以落在 4 张麻将交界(田字中心),圆刚好盖住 4 张麻将的各一角<br>
+          • 编辑器:mousemove 取消 snap 到偶数;边界拓宽(col -6..6, row -9..7,支持子格负向偏移);drawDiscAt/drawDiscPreview 圆心直接用 col*CELL 不再 +1<br>
+          • 圆盘间重叠判定从 3x3 box 任意子格交集(过严)改为欧氏距离&le;2 子格(临界相切允许放),支持田字中心位旁并列多个 disc<br>
+          • demo:renderDiscs 圆心改用 (d.col-minCol)*cellPx+cellPx/2(子格中心),discOverlapsTile &le;2(配合 3x3 占地区)<br>
+          • 示例_圆盘.json 圆心坐标同步迁移到新语义(麻将位 (col=-5)→ 子格中心 col=-4)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.1 · 2026-08-30</div>
+        <div class="gh-desc">
+          • 圆盘半径加大：r = 2 子格 = 1 张麻将边长(原 r = 1 子格太小,直径只有麻将一半),demo SVG 同步。圆心仍对齐麻将位中心<br>
+          • 编辑器圆盘画笔 snap hoverCell 到偶数(麻将位坐标):原 mousemove 直接传子格坐标,鼠标在子格奇数位置时圆心会偏离麻将位。snap 后圆心严格落在麻将位中心
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.10.0 · 2026-08-30</div>
+        <div class="gh-desc">
+          • <b>新增圆盘机制</b>：圆盘插入在两层麻将之间（如 L0/L1 之间），半径 = 1 张麻将长度，半透明紫色圆+中心白点+L 标签显示。①圆盘覆盖麻将 → 该麻将不可点；②圆盘被麻将覆盖 → 该麻将被消除时圆盘淡出消失；③所有圆盘消失 → 通关（与「麻将全清」任一即可）。手动放置，不通过生成器；不参与配对计算、不占层编号<br>
+          • <b>编辑器圆盘画笔</b>：画笔面板新增「🟣 圆盘」按钮；选择后弹出"插入到第 N/N+1 层之间"下拉（L0/L1 ~ L4/L5 五档）；选哪个缝哪个缝以上的层半透明显示预览；点画布 = 放置，再点同位置 = 删除；不支持跨层悬空（与所在层麻将重叠时画笔拒绝放置）；圆盘作为独立数组 discs 与 layers 并列存入 JSON<br>
+          • <b>Demo 渲染</b>：新增 demo/示例关卡/示例_圆盘.json（5 圆盘示例关）；URL 加 ?sample=disc 直接加载；圆盘用 SVG 单节点批量绘制（避免 N 个 div），定位与牌的 3D 偏移同步；点击消除上方麻将后 setInterval 链触发淡出动画；淡出完成自动 checkWin<br>
+          • <b>工作台后端</b>：GET/POST 关卡接口新增 discs 字段透传；保存到工作台时随 discs 一起写；列表元数据不含 discs（仅关卡 JSON 持有，不影响列表展示）
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.13 · 2026-08-28</div>
+        <div class="gh-desc">
+          • 修复 v4.9.12 引入的「支撑限制未通过」悬空报错：该版本把生成端支撑放宽为"看所有下层"（桥式搭放），但编辑器悬空判定只看正下方一层，隔层桥牌回到编辑器全被判悬空。已回退桥式，生成端支撑统一回"只看正下方一层"；并把最终兜底校验 levelHasFullSupport 也收紧为同口径（原宽松口径会放过偶化删牌后的悬空）<br>
+          • 边列覆盖修复效果不受影响（靠选位公平化+边列保底实现）：实测满6×8底座×50次边列第二层视觉覆盖仍 100%，且 0 关含悬空
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.12 · 2026-08-28</div>
+        <div class="gh-desc">
+          • 修复按底座堆塔时边列(最左/最右列)上层常年没牌盖的问题:①选位顺序先随机再排序,不再固定从左往右(旧逻辑边列永远最后被考虑,~13 张配额经常轮不到);②第一层加"边列保底"先占 1 张再铺其余;③上层支撑从"只看正下方一层"放宽为"看所有下层"(桥式搭放,与最终校验对齐)<br>
+          • 实测(满6×8底座×50次):边列第二层覆盖 26%→100%,边列第三层+有牌 2%→100%,中间列不受影响,四种底座形状生成成功率 30/30
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.11 · 2026-08-28</div>
+        <div class="gh-desc">
+          • 编辑器「保存到工作台」序号框从单独第二行挪到第一行末尾，和口令、关卡名并列（一行式布局更紧凑）
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.10 · 2026-08-28</div>
+        <div class="gh-desc">
+          • 修复工作台删除后「越刷越多」：①「连接 / 刷新」按钮和页面初次加载走 connect()，之前没过滤本端已删 key（只在 refresh 过滤）→ 陈旧缓存把刚删的关显示回来，计数 58 变 59；② 索引 _index.json 是读-改-写维护，两人并发（一人删/一人存）时旧快照覆盖会把已删条目写回索引成幽灵关。后端现在每次读/写索引前对账 git trees（1 子请求，文件清单=真值）：索引有文件无→剔幽灵；文件有索引无→补回丢失的保存。刚存 10 分钟内宽限不剔，防树读取陈旧错杀新关
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.9 · 2026-08-26</div>
+        <div class="gh-desc">
+          • 修复工作台「已删除」toast 出现但列表残留：实测后端 DELETE 其实成功（GitHub 真删了，git origin/main 的 _index.json 已不含该 key），但 Cloudflare 函数读 raw _index.json 被边缘缓存陈旧，refresh /levels 仍返回旧快照含被删 key<br>
+          • 前端加乐观移除（成功后立刻从 levels 数组删）+ localStorage 记被删 key，以后每次 refresh 过滤掉；等缓存过期这条 filter 自动失效、无副作用。底层彻底解仍需 LEVELS KV 绑定
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.8 · 2026-08-26</div>
+        <div class="gh-desc">
+          • 修复旋转画笔「放上去拿不掉」：旋转面板加「❌ 取消旋转」按钮，一键重置中心行/列/半径到默认无旋转态、清 state.sentRotation（之前设了中心后没有任何 UI 能清掉）<br>
+          • 修复「🗑 清空」不清旋转：clearAll 同步重置旋转输入框 + state.sentRotation，否则旋转配置会跟着导出的关卡走
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.7 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 修复工作台「点击删除显示删除失败」：列表兜底路径读 raw 索引偶发陈旧，会显示「幽灵关」——其文件其实已被删（比如协作者删过）。旧逻辑删文件 404 就直接报失败。<br>
+          • 改为幂等删除：文件在→删除；文件已不存在→仅清索引条目；两者都返回成功，幽灵项随手清掉、不再误报「删除失败」
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.6 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 工作台「保存后看不到新关」根治（你和你同学都中招）：实测真根因是 Cloudflare Worker 单次调用最多 50 个 fetch 子请求，旧实现列表逐个读关卡文件（69 关=70 次）超限被砍剩 47，最新存档永远不进列表。之前的缓存/破缓存修复都在治错症。<br>
+          • 改成 _index.json 存全量列表元数据：列列表=1 次读取不再超限；保存/改名/排序/删除都会同步索引，保存后立刻实时可见
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.5 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 工作台「已保存关看不到」根治：实测定案是 Pages Functions 对 api.github.com 子请求做边缘缓存(cache:no-store 压不住固定 URL)，导致列表永远停在旧快照、保存/单关读取却实时。<br>
+          • 列表改读 raw.githubusercontent.com（不同主机 + 每次 _t 时间戳破缓存），保存后刷新工作台立刻能看到新关
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.4 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 「生成关卡」问号里新增说明：堆层数是起始值，生成会按目标分数自动调层(低→降层/高→升层)，最终层数可能≠预设。堆层数输入下方也加了同款提示
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.3 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 工作台列表改用 _index.json 索引：函数对 GitHub 列目录(/contents、/git/trees)拿到的都是旧快照(最新存的关看不到)，而"按精确路径读单个文件"实时。改为维护一份关卡索引文件，存关时追加 key、列表读它 —— 永远实时
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.2 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 工作台列表仍漏掉最新存的关：/contents 目录列表接口对同 URL 返回陈旧快照(新存的高分关看不到)，cache:no-store 和 URL 时间戳都治不了(是 GitHub 侧问题)。改用一个新端点枚举：git trees API(基于 commit tree 实时反映)列文件，内容仍逐文件精确读取
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.1 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 工作台新存的关列表看不到：GitHub「目录列表」接口(contents?ref=main)对同一 URL 返回陈旧缓存，单关读取实时、唯独列表旧(cache:no-store 对它无效)。给目录列表请求 URL 加时间戳破缓存参数(&_t=now)，每次新 URL→必然未命中→拉到最新
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.9.0 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 导入支持「形状 + Type ID」：导入 JSON 时保留每张普通牌的 typeId(牌面)，不再只导空壳形状
+          • 新增工具条「🀫 牌面ID」开关，显示每张牌的 Type ID
+          • 按当前形状生成：完整导入的关卡(每张牌都有 typeId 且可解)直接保留原花色复现同一关；不完整/不可解才重新填色
+          • 导出也写回普通牌的 typeId
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.8.5 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 工作台列表仍显示旧关数：根因是 Function 对 GitHub 「目录列表」子请求被 Cloudflare 缓存(单关读取是实时的,唯独列表停在旧快照)。给 Function 的 GitHub 子请求加请求侧 cache:'no-store',列表每次实时拉。
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.8.4 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 修复"保存到工作台后刷新看不到新关"：工作台 API 响应被 Cloudflare 边缘缓存(GET /levels 一直返回旧列表)，新存进 GitHub 的关列表读不到。给 API 加 Cache-Control: no-store，列表实时反映。
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.8.3 · 2026-08-25</div>
+        <div class="gh-desc">
+          • 修复"保存到工作台后在工作台刷新看不到"：口令原来存 sessionStorage（每标签独立，编辑器与工作台跨标签不共享）→ 工作台 getPass 为空就静默不加载。改为 localStorage 跨标签共享，编辑器存的关拿到工作台任意标签自动带出。
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.8.2 · 2026-08-24</div>
+        <div class="gh-desc">
+          • 修复"点击推塔生成后右侧预览不出现"：预览起始对 demo 的 HEAD 探测会把"超大文件 HEAD 被取消(ERR_ABORTED)"误判为"demo 缺失"→ 直接禁用整场预览。改为只有确认 404 才禁用，其余照常加载。
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.8.1 · 2026-08-24</div>
+        <div class="gh-desc">
+          • 修复"探测本底座可出分数"按钮无反应：初始状态行残留对已删变量 N 的引用(N 未声明 → 抛 ReferenceError，函数未真正运行)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.8.0 · 2026-08-24</div>
+        <div class="gh-desc">
+          • 目标分数 → 可点率 反向驱动：按目标分数自动调节堆塔层数(塔形密度跟随目标)<br>
+          • 目标低 → 自动降层(塔更"开" → 可点率↑)；目标高 → 自动升层(埋更多 → 可点率↓)<br>
+          • 堆塔单关/批量生成都支持自动调层，从用户设定层数起步，够不到目标时才调<br>
+          • 探测分数范围改为扫描层数2~7，报出底座真正可达区间<br>
+          • 结果状态显示 可点%，未命中时兜底取"分数离目标最近"而不是第一个
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.7.0 · 2026-08-24</div>
+        <div class="gh-desc">
+          • 吐牌机交互重做：spitter 画笔下"再次点击已放置的吐牌机 → 直接消除"(对齐普通牌点已存在即擦除,不再依赖双击)<br>
+          • 修复吐牌机放置左右不对称：去掉镜像位置重叠检查(spitter 本就不对称放置)<br>
+          • 非当前层吐牌机半透明淡出(alpha 0.4),俯视编辑当前层时不再抢眼<br>
+          • 同层禁止把吐牌机塞进两张普通牌中间的缝(与普通牌放置规则一致)<br>
+          • 吐牌机输出目标位也做支撑校验：目标位下方无支撑则禁止放置<br>
+          • 工作台新增"预览"按钮：内嵌 demo iframe 弹层即时试玩该关
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.41 · 2026-08-22</div>
+        <div class="gh-desc">
+          • 新增吐牌机队列压力维度:只算"实际不可见/不可消"的队列牌贡献<br>
+          • 从第1张往后找，找到第一张无法立即配对的牌，它及之后所有牌都算压力<br>
+          • 如果第1张就能立即配对，它就完全不算压力(出牌即消)<br>
+          • 公式:(0.5 + hiddenCount - 1) × 8,第1张折半<br>
+          • 目标分数问号:补充吐牌机队列压力说明 + 设计理由
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.40 · 2026-08-22</div>
+        <div class="gh-desc">
+          • L0吐牌机跳过支撑校验:地面就是支撑,无需校验<br>
+          • 只有L1+吐牌机才需要检查target位置是否有下层牌托住
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.20 · 2026-08-21</div>
+        <div class="gh-desc">
+          • demo支持吐牌机渲染(橙色⚙图标)+队列牌隐藏
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.19 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 队列牌用独立typeId池(避免和普通牌重复,防止同花色三张)<br>
+          • 吐牌机放置时检查目标位置是否被覆盖(被覆盖则拒绝放置)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.15 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 按底座生成也排除吐牌机参与配对+填色
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.14 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修复吐牌机导致生成卡住(排除吐牌机参与backwardFill配对)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.13 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 吐牌机tile保留type字段(不再显示为普通麻将)<br>
+          • 吐牌机不参与填色+偶数校验排除吐牌机
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.12 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 吐牌机偶数校验+支撑验证(按形状生成和按底座生成都校验)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.11 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 吐牌机编辑器支持:堆叠队列+支撑验证+导入导出<br>
+          • 吐牌机画笔自动在指向位置堆N张队列牌
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.10 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 按底座堆塔时保留编辑器已有的层(不再丢弃L1+)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.9 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 填色用随机起始seed(每次点生成结果不同)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.8 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 修复吐牌机被当作普通麻将填色(fillEditorShape追踪spitter)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.7 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 修复版本检测bug(version字段用commit hash匹配APP_VERSION)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.6 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 删除主页试玩Demo卡片<br>
+          • 修复version.json嵌套引号(清理changelog)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.5 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 修复保存按钮bug(id不匹配wbNewOrder/wbSaveOrder)<br>
+          • 保存失败用alert弹窗
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.4 · 2026-08-18</div>
+        <div class="gh-desc">
+          • Tab双模式(参数模式+难度模式)<br>
+          • 难度模式下不严格匹配(参数自动分配)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.3 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 切换难度模式时同步滑轮值(避免两个Tab显示不一致)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.2 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 难度10的分数范围从140~170改为122~151(匹配实际可达范围)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.1 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 难度模式下不严格匹配(参数自动分配,直接接受)<br>
+          • 修复偏差说明不一致(用best.score而非最后一次score)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.0 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 新增难度模式Tab:1-10滑轮,自动映射分数/钩子/暗牌比例<br>
+          • 参数模式Tab保留原有详细滑轮<br>
+          • 未命中时展示最接近的关卡+偏差说明
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.5.13 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 修复钩子百分比超过100%的bug(effHooks按对子加权)<br>
+          • 撤销随机seed偏移,恢复确定性生成(同底座每次结果一样)<br>
+          • 失败时永远返回最接近的关卡+显示客观偏差(不再报错)<br>
+          • 堆塔失败显示具体错误(不再笼统说底座无法填色)<br>
+          • 目标分数范围挪到顶部,单关生成也匹配分数范围<br>
+          • 状态框高度固定64px,不自适应变化
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.5.0 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 加槽位压力维度minSlots(第一个中盘指标,捕捉"点错顺序就死局")<br>
+          • 钩子定义修正:一对里两张都埋才算钩(修复A1+B1被架空的bug)<br>
+          • 钩子加权改为可见伴侣加权(同色露越多→越不难记)<br>
+          • 结果行钩子%从raw改为加权(不再"骗人"显示95%)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.36 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修堆塔路径 spitter 本体丢失(generateStackFromShape 漏 push spitter 本体)<br>
+          • 修校验信息:把"normalCount"显示为"用户画的普通牌数"(减 spitterOrder 牌)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.36 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修 spitter 校验:普通牌必须偶数 + spitter.count 必须偶数(2/4)<br>
+          • 修 backwardFill 支持占位牌(自动从普通牌池赋 typeId)<br>
+          • 修堆塔路径 spitter 本体 typeId 保持 null(不再被填花色)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.38 · 2026-08-22</div>
+        <div class="gh-desc">
+          • 队列牌点直接消除(不进卡槽):消除队列牌 + spitter 本体 + target 牌<br>
+          • 卡槽保持干净,不会出现消除不掉的牌
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.37 · 2026-08-22</div>
+        <div class="gh-desc">
+          • 队列牌 layer 排序改为 spitterOrder=1 在最上层(玩家先点最上面先释放)<br>
+          • 之前 spitterOrder=2 layer 最高,挡住 1;改成 1 在最上面
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.36 · 2026-08-22</div>
+        <div class="gh-desc">
+          • 队列牌初始全部可见(堆叠在 target 上方),不再逐步释放<br>
+          • 点队列牌:这张牌 + 吐牌机本体 + target 牌 一起消失(不等配对)<br>
+          • 队列牌不受 isClickable 限制(即使被压住也能点)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.35 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 堆塔凑偶循环改为 while(原来只删 1 对,实际可能需要删 2/4 张才能凑齐奇偶性)<br>
+          • 移除堆塔路径的冗余最终偶数校验(凑偶循环已保证)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.34 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 堆塔路径不再强制底座普通牌偶数(堆塔算法会从顶层成对删凑偶数)<br>
+          • 堆塔路径不再校验 spitter.count 奇偶(堆塔会凑)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.33 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 堆塔生成时 spitter.count 不强制奇偶(堆塔可凑偶)<br>
+          • demo 队列牌点击直接消除+触发释放下一张(不等配对,体验更顺畅)<br>
+          • fillEditorShape 校验改为:普通牌奇数 + fillTiles 偶 + 总可消除偶(自动判断 count 是否合适)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.32 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 重做 spitter 交互:画笔不再自动堆队列牌,生成器根据 spitter.count 自动生成队列牌(堆叠在 target 上方多层)<br>
+          • 用户操作简化:画 1 个 spitter + 若干普通牌(target 摆或让生成器补)→ 一键生成<br>
+          • 校验:普通牌必须奇数(target 包含在内),spitter.count 必须偶数(2/4),fillTiles 必须偶数<br>
+          • 生成器自动在 target 空时补占位牌(也参与填色,确保关卡可解)<br>
+          • spitter 本体不动 target 位置已有牌(target 由生成器从普通牌池赋 typeId)<br>
+          • spitter 关联牌(target)不参与 backwardFill 填色,单独赋 typeId
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.31 · 2026-08-21</div>
+        <div class="gh-desc">
+          • erase spitter 本体时清掉对应 stack(之前只删 layer.tiles 不清 stacks,导致 stack 残留但无 spitter tile,报"队列牌 0 张")<br>
+          • 键盘 Delete/Backspace 删除 spitter 本体时同样清 stack<br>
+          • fillEditorShape 报错时检测孤儿队列牌(其他位置),给出"撤销重画"提示
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.30 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修复编辑器画笔逻辑重复声明 tKey 导致 SyntaxError,整个编辑器不渲染(画笔逻辑未生效)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.29 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 画笔自动补支撑牌:摆 spitter 时在 target L0 自动放普通牌(作为队列牌支撑),不删除原牌<br>
+          • buildEditorShape 展开 stacks 时 layer = layerIdx + order(队列牌堆叠在 target 上方多层,不再是同一层悬空)<br>
+          • 队列牌数校验改为"必须是奇数"(指向位置 1 张 + N 张队列 = N+1 张需偶数 → N 必为奇数)<br>
+          • fillEditorShape 错误信息区分"奇数"和"偶数",加数学推导说明
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.28 · 2026-08-21</div>
+        <div class="gh-desc">
+          • generateStackFromShape 给 spitter/queue tile 重新分配 id(避免多 tile 共享 id=0,导致 demo 渲染混乱)<br>
+          • count 与队列数不匹配的错误信息加修复提示
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.27 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修复 buildEditorShape 写 spitter tile 时丢失 dir/count 字段(导致生成报 count=undefined)<br>
+          • 修复 buildEditorShape 的 spitters 数组错存 target 位置(导致 generateStackFromShape 写出的 spitter tile 跑到 target 位置,视觉上"方向反了")<br>
+          • spitters 数组改为存 spitter 本体位置 + dir/count,语义清晰
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.26 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修复吐牌机本体被显示成普通麻将图:加 .spitter-overlay 叠加层,用 ⤴ 箭头 + 方向 + ×剩余数 标识<br>
+          • 吐牌机本体不再调用 tileImgSrc(typeId),改用 SPITTER_BODY_IMAGE(纯白底 SVG)+ CSS 绘制<br>
+          • 新增 spitterRemainingQueueCount(id) helper 显示剩余队列数
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.25 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 修复偶数校验冲突:移除 generateCurrentShape 中旧的总牌数偶数校验(line 2563),由 fillEditorShape 内部细粒度校验接管<br>
+          • 7 普通 + 1 spitter + 2 队列时只报"普通牌 7 张为奇数",不再误报"牌数必须为偶数"
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.24 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 按当前形状生成:填色前校验普通牌数偶数、spitter count 合理性(1~6)、队列牌数匹配 count、队列牌数偶数<br>
+          • 按堆塔生成:底座校验普通牌数偶数 + 队列牌总数偶数<br>
+          • 堆塔凑偶逻辑改为考虑队列牌奇偶性(shape.tiles 与队列牌同奇偶,凑偶后总和偶数)<br>
+          • 最终偶数校验同时排除 spitter 本体和队列牌
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.6.23 · 2026-08-21</div>
+        <div class="gh-desc">
+          • 吐牌机游戏逻辑完整实现:指向位置牌消除时释放队列牌(淡入+缩放动画),队列用尽后吐牌机消失<br>
+          • 吐牌机本体不再分配 typeId(不是麻将,不可参与配对)<br>
+          • 队列牌 typeId 改为共享池(与普通牌共用,可重复,确保释放后可正常配对消除)<br>
+          • 编辑器 buildEditorShape 写出 spitter 时保留 dir/count 字段
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.4.0 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 钩子定义扩展:任意埋牌(上压/左右夹)都算钩子,不仅层差≥2<br>
+          • 分数公式封顶:钩子/暗钩 5→8,让分数波动更明显<br>
+          • 批量生成0关提示:分数上限超过140时给出具体原因
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.3.3 · 2026-08-18</div>
+        <div class="gh-desc">
+          • Demo修复:消除时立即释放卡槽,不再等动画<br>
+          • Demo优化:飞入动画时长 0.35s→0.2s,使用 GPU 加速<br>
+          • 修复:弹层点击空白处正确关闭(原检查误判 body 的 textContent)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.3.2 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 编辑器:麻将3D效果增强(偏移30px+右侧面/底面阴影)<br>
+          • 删除层标签L0/L1,视野更清爽<br>
+          • 变更日志:强制刷新按钮移到标题旁边
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.3.1 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 弹框位置:智能避开视口边界,确保完全显示<br>
+          • 编辑器:麻将层级偏移 10px→20px,状态框固定高度防跳动<br>
+          • 探测分数:显示具体错误消息(如"填色无解")+添加奇数牌前置检查<br>
+          • 生成参数:暗牌总数移到暗钩比例之前<br>
+          • 新增变更日志按钮(工作台旁边)+强制刷新按钮<br>
+          • 目标分数问号:补充维度详细说明(可点率/层数/钩子/暗钩/设计理由)
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.3 · 2026-08-18</div>
+        <div class="gh-desc">
+          • 新增变更日志按钮(工作台旁边)<br>
+          • 目标分数问号:补充维度详细说明(可点率/层数/钩子/暗钩/设计理由)<br>
+          • Demo 修复:暗牌与卡槽同花色时添加 checkMatch()调用<br>
+          • 编辑器:拖拽分隔条时禁用 iframe pointer-events,修复松手后继续拖拽
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.2 · 2026-08-18</div>
+        <div class="gh-desc">
+          • Demo 动画系统:飞入卡槽、匹配消除、暗牌先翻后飞<br>
+          • Demo 交互修复:牌不再残留、失败可重来、计时器重置<br>
+          • 生成器冲突检查修正:相邻牌合法,只禁止完全重合<br>
+          • 堆塔死形重搭:外层 30 次重搭新塔形<br>
+          • 批量生成候选池:不再出 0 关<br>
+          • 生成参数重构:删冗余暗钩目标,改为推导显示<br>
+          • 帮助按钮优化:加大按钮 + 新增分数说明<br>
+          • 预览面板修正:计时器误启动 + 默认隐藏开始遮罩
+        </div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">v4.1 · 2026-08-17</div>
+        <div class="gh-desc">
+          • 难度公式 v2:钩子稀缺度加权 + 目标改百分比<br>
+          • 编辑器 v4 浅色重构<br>
+          • 工作台独立成页<br>
+          • 试玩计时闭环:按钮 + 最佳成绩<br>
+          • Cloudflare 迁移完成
+        </div>
+      </div>
+      <div style="margin-top:12px; text-align:center;">
+        <button class="sbtn" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强制刷新</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <div class="divider" id="divSide"></div>
+
+  <!-- ============ 画布区 ============ -->
+  <main class="canvas-area">
+    <div class="canvas-wrap" id="canvasWrap">
+      <canvas id="canvas"></canvas>
+    </div>
+    <div class="statusbar">
+      <span>坐标 <b id="sbCoord">—</b></span>
+      <div class="sep2"></div>
+      <span>当前 <b id="sbLayer">L0</b></span>
+      <div class="sep2"></div>
+      <span class="status-support" id="sbSupport" title="点击高亮悬空牌">支撑 <b id="sbSupportText">—</b></span>
+      <div class="sep2"></div>
+      <span id="sbCounts">普通 <b>0</b> · 暗 <b>0</b> · 吐 <b>0</b> · 共 <b>0</b></span>
+      <div class="status-spacer"></div>
+      <span>缩放 <b id="sbZoom">100%</b></span>
+    </div>
+  </main>
+
+  <div class="divider" id="divPrev"></div>
+
+  <!-- ============ 右侧预览面板 ============ -->
+  <aside class="preview-panel" id="previewPanel">
+    <div class="preview-header">
+      <div class="preview-title">
+        <span>🧪 关卡预览</span>
+        <span class="preview-timer" id="previewTimer">⏱ 00:00</span>
+        <span class="preview-empty-hint" id="previewEmptyHint">生成关卡后在此试玩</span>
+      </div>
+      <div class="preview-actions">
+        <button class="mini-btn" onclick="toggleWbSaveBox()" id="wbToggleBtn" disabled>🤝 保存到工作台</button>
+        <button class="mini-btn primary" onclick="downloadCurrentLevel()" id="downloadBtn" disabled>⬇ 下载 JSON</button>
+        <button class="mini-btn" onclick="closePreview()" id="closeBtn" disabled>✕ 关闭</button>
+      </div>
+    </div>
+    <div class="preview-stats" id="previewStats">
+      <span>-- 张</span><span>-- 对</span><span>-- 分</span><span>暗 --</span><span>可点 --</span><span>钩子 --</span><span>-- 层</span>
+    </div>
+    <div class="play-history" id="playHistoryBox" style="display:none;"></div>
+    <div class="wb-savebox" id="wbSaveBox" style="display:none;">
+      <div class="wb-save-title">保存到共享工作台</div>
+      <div class="wb-save-row">
+        <input type="password" id="wbPass" placeholder="共享口令">
+        <input type="text" id="wbSaveName" placeholder="关卡名，如「第1关 · 初始」">
+        <label>第 <input type="number" id="wbNewOrder" min="0" max="999" placeholder="几" title="留空 = 未排号"> 关</label>
+      </div>
+      <div class="wb-save-row">
+        <span class="wb-save-spacer"></span>
+        <button class="mini-btn primary" onclick="saveCurrentLevelToWorkbench(this)">保存</button>
+        <button class="mini-btn" onclick="toggleWbSaveBox(false)">收起</button>
+      </div>
+      <div class="wb-hint">口令只需输入一次，本浏览器会记住；另存一份去「📋 工作台」页统一管理全部关卡。</div>
+      <div class="wb-status" id="workbenchStatus"></div>
+    </div>
+    <div class="results-section" id="resultsSection" style="display:none;">
+      <div class="results-head">
+        <span>📋 生成结果 <b id="resultCount">0</b></span>
+        <span class="results-actions">
+          <button class="mini-btn" onclick="downloadAllResults()" id="downloadAllBtn">⬇ 下载全部</button>
+          <button class="mini-btn" onclick="clearResults()">清空</button>
+        </span>
+      </div>
+      <div class="results-list" id="resultsList"></div>
+    </div>
+    <div class="preview-iframe-wrap">
+      <div class="preview-placeholder" id="previewPlaceholder">
+        <div class="placeholder-card">
+          <div class="placeholder-icon">🎴</div>
+          <div class="placeholder-text" id="placeholderText">生成的关卡会直接在这里试玩</div>
+          <div class="placeholder-sub" id="placeholderSub">在左侧画形状 → 点「按当前形状生成」或「按当前底座搭建后生成」<br>批量生成的结果会列在上方「生成结果」里，点任意一行预览</div>
+        </div>
+      </div>
+      <div class="game-start-overlay hidden" id="gameStartOverlay">
+        <button class="game-start-btn" id="gameStartBtn" onclick="startGame()">⏱ 计时并开始游戏</button>
+      </div>
+      <iframe id="previewFrame" src="about:blank" frameborder="0"></iframe>
+    </div>
+  </aside>
+</div>
+
+<!-- ============ Toast & 帮助 ============ -->
+<div class="toast-wrap" id="toastWrap"></div>
+
+<div class="help-pop" id="helpPop">
+  <h4>⌨ 快捷键与鼠标</h4>
+  <div class="hrow"><span><kbd>左键</kbd> 拖拽</span><span>绘制 / 替换</span></div>
+  <div class="hrow"><span><kbd>右键</kbd> 拖拽</span><span>擦除</span></div>
+  <div class="hrow"><span><kbd>Delete</kbd></span><span>删除悬停的牌</span></div>
+  <div class="hrow"><span><kbd>滚轮</kbd> / <kbd>Ctrl</kbd>+<kbd>滚轮</kbd></span><span>缩放（以光标为中心）</span></div>
+  <div class="hrow"><span><kbd>空格</kbd> / <kbd>中键</kbd> 拖拽</span><span>平移画布</span></div>
+  <div class="hrow"><span><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></span><span>撤销 / 重做</span></div>
+  <div class="hrow"><span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></span><span>普通 / 暗牌 / 吐牌</span></div>
+  <div class="hrow"><span><kbd>Q</kbd> <kbd>E</kbd></span><span>切换层</span></div>
+  <div class="hrow"><span><kbd>S</kbd> / <kbd>A</kbd></span><span>对称 / 显示全部层</span></div>
+</div>
+
+<script src="generator.js?v=481"></script>
+<script>
+// ========== 配置：编辑器坐标显示范围 ==========
+// 横向固定 12 个子格 = 6 个麻将位（每张牌占 2 子格）
+// 编辑器坐标 col -5..5，显示偏移 +5 → 显示 0..10，牌占 2 格最右到 12
+// 编辑器坐标 row -8..6（显示 +8 → 0..14），牌占 2 格 → 最底显示 16
+const GRID_COLS = 12;  // 画布列数（牌区宽：12 子格 = 6 麻将位，左右不留空列）
+const GRID_ROWS = 16;  // 画布行数（牌区高：16 子格 = 8 麻将位）
+const CELL = 40;       // 每格世界像素（缩放前）
+const TILE = 2;        // 每张牌占 2×2 格
+const BOARD_PAD = 6;   // 棋盘四周留白（世界像素）
+
+// 每层颜色（俯视平铺色块，浅色底适配）
+const LAYER_COLORS = [
+  { base: '#d9b380', accent: '#e8cfa5' }, // L0 棕黄（最底）
+  { base: '#8fb6c9', accent: '#b3d2de' }, // L1 蓝灰
+  { base: '#9cc28a', accent: '#bcd9ae' }, // L2 草绿
+  { base: '#d99a86', accent: '#e9bcac' }, // L3 砖红
+  { base: '#b99ccb', accent: '#d3bfe0' }, // L4 紫
+  { base: '#8cc0ad', accent: '#aed6c7' }, // L5 青
+];
+
+// ========== 状态 ==========
+let state = {
+  layers: [],
+  currentLayer: 0,
+  brush: 'normal',
+  discGap: 0,                          // 圆盘画笔:插到哪两个层之间(0=插在 L0 上方 = L0/L1 之间)
+  spitterDir: 'up',
+  rotationDir: 'clockwise',
+  sentRotation: null,                // 已发送到 demo 的旋转配置（用于 overlay 显示，与 demo 实际保持一致）
+  spitterCount: 2,
+  symmetric: true,
+  showAll: true,
+  snapToSupport: true,
+  showGrid: true,
+  showCoord: false,
+  showTypeId: false, // 显示普通牌的牌面 Type ID(导入时保留)
+  discs: [],                           // 圆盘数组 [{id, gapLayer, row, col}],gapLayer=N 表示插在 LN 与 LN+1 之间
+  selectedDiscId: null,                // 选中圆盘(高亮 covers)
+  painting: false,
+  paintMode: null,
+  strokeSnapshot: null, // 笔画开始前的 layers 快照（用于撤销）
+  hoverCell: null,      // {col, row, valid}
+  hoverTile: null,      // 当前鼠标位置最顶层的牌
+  showIssues: false,    // 高亮悬空牌
+  spaceDown: false,
+  panning: false,
+  panStart: null,
+};
+
+// 视图变换：screen = world * scale + (ox, oy)
+let view = { scale: 1, ox: 0, oy: 0 };
+let viewFitted = false; // 首次拿到有效尺寸后才执行 fitView
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const canvasWrap = document.getElementById('canvasWrap');
+
+function worldTopPad() {
+  const maxLayer = Math.max(state.layers.length - 1, 0);
+  return maxLayer * CELL * 0.2 + 10;
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvasWrap.clientWidth, h = canvasWrap.clientHeight;
+  if (w === 0 || h === 0) return;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  if (!viewFitted) { fitView(); return; } // fitView 内部会 draw
+  draw();
+}
+
+// 缩放并居中到完整画布（填满可视区较窄的一边，四周不再留大片空白）
+function fitView() {
+  const w = canvasWrap.clientWidth, h = canvasWrap.clientHeight;
+  if (w === 0 || h === 0) return;
+  const contentW = GRID_COLS * CELL;
+  const contentH = worldTopPad() + GRID_ROWS * CELL;
+  const scale = Math.min(w / contentW, h / contentH) * 0.98;
+  view.scale = Math.min(3.5, Math.max(0.3, scale));
+  view.ox = (w - contentW * view.scale) / 2;
+  view.oy = (h - contentH * view.scale) / 2;
+  viewFitted = true;
+  draw();
+}
+
+new ResizeObserver(() => resizeCanvas()).observe(canvasWrap);
+
+// ========== 三栏可左右拉伸（宽度记忆） ==========
+const LAYOUT_KEY = 'mjEditorLayout.v1';
+const layoutW = { sidebar: 264, preview: 480 }; // 默认宽度
+try {
+  const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+  if (saved.sidebar) layoutW.sidebar = saved.sidebar;
+  if (saved.preview) layoutW.preview = saved.preview;
+} catch (_) {}
+
+function applyLayout() {
+  document.getElementById('sidebar').style.width = layoutW.sidebar + 'px';
+  const panel = document.getElementById('previewPanel');
+  if (!panel.classList.contains('collapsed')) panel.style.width = layoutW.preview + 'px';
+}
+
+function initDivider(id, targetId, dir) {
+  const div = document.getElementById(id);
+  const target = document.getElementById(targetId);
+  div.addEventListener('mousedown', e => {
+    e.preventDefault();
+    document.body.classList.add('dragging-h');
+    div.classList.add('dragging');
+    target.classList.add('resizing');
+    // 拖拽期间禁用 iframe 指针事件，防止 mouseup 被 iframe 吞掉导致松手后继续拖拽
+    document.querySelectorAll('iframe').forEach(f => { f.style.pointerEvents = 'none'; });
+    const startX = e.clientX;
+    const startW = target.getBoundingClientRect().width;
+    function move(ev) {
+      let w = dir === 'left'
+        ? startW + (ev.clientX - startX)   // 侧栏：往右拉变宽
+        : startW - (ev.clientX - startX);  // 预览：往左拉变宽
+      w = Math.round(w);
+      if (targetId === 'sidebar') w = Math.min(440, Math.max(200, w));
+      else w = Math.min(760, Math.max(340, w));
+      target.style.width = w + 'px';
+      if (targetId === 'sidebar') layoutW.sidebar = w;
+      else layoutW.preview = w;
+    }
+    function up() {
+      document.body.classList.remove('dragging-h');
+      div.classList.remove('dragging');
+      target.classList.remove('resizing');
+      // 恢复 iframe 指针事件
+      document.querySelectorAll('iframe').forEach(f => { f.style.pointerEvents = ''; });
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutW)); } catch (_) {}
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+}
+applyLayout();
+initDivider('divSide', 'sidebar', 'left');
+initDivider('divPrev', 'previewPanel', 'right');
+
+// 镜像列（内部 col=横向）：所有层围绕 col=0 镜像
+function mirrorCol(col, layer) {
+  return -col;
+}
+
+function pixelToCell(px, py) {
+  // CSS 像素 → 世界坐标 → 编辑器坐标
+  const wx = (px - view.ox) / view.scale;
+  const wy = (py - view.oy) / view.scale;
+  const bx = BOARD_PAD, by = worldTopPad() + BOARD_PAD;
+  // 圆盘画笔跟普通画笔一样:floor 取整数 cell(1 cell 单位 snap,像摆麻将)
+  // drawDiscAt 渲染时用 +CELL/2 偏移 → 圆心落在 cell 中心
+  //   col=N → cx = BOARD_PAD + (N+OFFSET_COL)*CELL + CELL/2
+  //   click 在 cell N 区域 → col = N → 圆心在 cell N center ✓
+  const eps = 1e-6;
+  return {
+    col: Math.floor((wx - bx) / CELL + eps) - DISPLAY_OFFSET_COL,
+    row: Math.floor((wy - by) / CELL + eps) - DISPLAY_OFFSET_ROW,
+  };
+}
+
+// ========== 历史（撤销/重做） ==========
+const HISTORY_LIMIT = 100;
+let past = [], future = [];
+
+function serializeState() { return JSON.stringify({ layers: state.layers, discs: state.discs }); }
+
+// 全局圆盘 id 计数器(避免和 tile id 撞号;tile id 1 起,圆盘 id 9000+)
+let _discIdCounter = 9000;
+function nextDiscId() {
+  while (state.discs.some(d => d.id === _discIdCounter)) _discIdCounter++;
+  return _discIdCounter++;
+}
+
+function pushHistory(beforeSnapshot) {
+  past.push(beforeSnapshot);
+  if (past.length > HISTORY_LIMIT) past.shift();
+  future = [];
+  updateUndoButtons();
+  scheduleAutosave();
+}
+
+function restoreState(json) {
+  const obj = JSON.parse(json);
+  state.layers = obj.layers || [{ tiles: {} }, { tiles: {} }];
+  state.discs = obj.discs || [];
+  state.selectedDiscId = null;
+  if (state.currentLayer >= state.layers.length) state.currentLayer = state.layers.length - 1;
+  if (state.currentLayer < 0) state.currentLayer = 0;
+  updateUI(); updateLegend(); draw();
+}
+
+function undo() {
+  if (!past.length) return;
+  future.push(serializeState());
+  restoreState(past.pop());
+  updateUndoButtons();
+  scheduleAutosave();
+}
+
+function redo() {
+  if (!future.length) return;
+  past.push(serializeState());
+  restoreState(future.pop());
+  updateUndoButtons();
+  scheduleAutosave();
+}
+
+function updateUndoButtons() {
+  document.getElementById('undoBtn').disabled = past.length === 0;
+  document.getElementById('redoBtn').disabled = future.length === 0;
+}
+
+// ========== 自动保存（localStorage，防误关丢失） ==========
+const AUTOSAVE_KEY = 'mjShapeEditor.v1';
+let autosaveTimer = null;
+
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
+        layers: state.layers,
+        currentLayer: state.currentLayer,
+      }));
+    } catch (_) { /* 隐私模式等场景忽略 */ }
+  }, 500);
+}
+
+function loadAutosave() {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data.layers || !data.layers.length) return false;
+    const hasTiles = data.layers.some(l => l.tiles && Object.keys(l.tiles).length > 0);
+    if (!hasTiles) return false;
+    state.layers = data.layers;
+    state.currentLayer = Math.min(data.currentLayer || 0, state.layers.length - 1);
+    return true;
+  } catch (_) { return false; }
+}
+
+function clearAutosave() {
+  try { localStorage.removeItem(AUTOSAVE_KEY); } catch (_) {}
+}
+
+// ========== Toast ==========
+function toast(msg, type) {
+  const wrap = document.getElementById('toastWrap');
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  }, 2500);
+}
+
+// ========== 卡片折叠 ==========
+function toggleCard(id) {
+  document.getElementById(id).classList.toggle('collapsed');
+}
+
+// ========== 帮助弹层共用 ==========
+function positionPop(pop, btn) {
+  const rect = btn.getBoundingClientRect();
+  const popWidth = pop.offsetWidth || 300;
+  const gap = 8;
+  const marginTop = 10;
+
+  // 水平位置:默认左对齐,超出右边界则右对齐
+  let left = rect.left;
+  if (left + popWidth > window.innerWidth - marginTop) {
+    left = window.innerWidth - popWidth - marginTop;
+  }
+  if (left < marginTop) left = marginTop;
+
+  // 垂直位置:默认在按钮下方,超出下边界则显示在按钮上方
+  let top = rect.bottom + gap;
+  const popHeight = pop.scrollHeight || 400;
+  if (top + popHeight > window.innerHeight - marginTop) {
+    // 显示在按钮上方
+    top = rect.top - popHeight - gap;
+    // 如果上方也不够空间,则贴近视口顶部
+    if (top < marginTop) top = marginTop;
+  }
+
+  pop.style.top = top + 'px';
+  pop.style.left = left + 'px';
+}
+// ========== 生成参数帮助弹层 ==========
+function toggleGenHelp(e) {
+  e.stopPropagation();
+  const pop = document.getElementById('genHelpPop');
+  pop.classList.toggle('show');
+  if (pop.classList.contains('show')) positionPop(pop, e.currentTarget);
+}
+// ========== 分数说明帮助弹层 ==========
+function toggleScoreHelp(e) {
+  e.stopPropagation();
+  const pop = document.getElementById('scoreHelpPop');
+  pop.classList.toggle('show');
+  if (pop.classList.contains('show')) positionPop(pop, e.currentTarget);
+}
+// ========== 变更日志弹层 ==========
+function toggleChangelog(e) {
+  e.stopPropagation();
+  const pop = document.getElementById('changelogPop');
+  pop.classList.toggle('show');
+  if (pop.classList.contains('show')) positionPop(pop, e.currentTarget);
+}
+document.addEventListener('click', e => {
+  // 用 closest 精确判断:点击的是否是触发按钮本身(点按钮不关,让 toggle 处理)
+  const clickedTrigger = e.target.closest('[onclick*="toggleGenHelp"], [onclick*="toggleScoreHelp"], [onclick*="toggleChangelog"]');
+  ['genHelpPop', 'scoreHelpPop', 'changelogPop'].forEach(id => {
+    const pop = document.getElementById(id);
+    if (pop.classList.contains('show') && !pop.contains(e.target) && !clickedTrigger) {
+      pop.classList.remove('show');
+    }
+  });
+});
+
+// ========== 帮助弹层 ==========
+function toggleHelp(e) {
+  e.stopPropagation();
+  document.getElementById('helpPop').classList.toggle('show');
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('helpPop');
+  if (pop.classList.contains('show') && !pop.contains(e.target)) pop.classList.remove('show');
+});
+
+// ========== 危险操作：二次点击确认（iframe 里 confirm 会被拦截） ==========
+function armConfirm(btn, label, action) {
+  if (!btn.dataset.armed) {
+    const orig = btn.innerHTML;
+    btn.dataset.armed = '1';
+    btn.innerHTML = label;
+    btn.classList.add('armed');
+    setTimeout(() => {
+      delete btn.dataset.armed;
+      btn.innerHTML = orig;
+      btn.classList.remove('armed');
+    }, 3000);
+    return;
+  }
+  delete btn.dataset.armed;
+  btn.classList.remove('armed');
+  btn.innerHTML = btn.dataset.origLabel || btn.innerHTML;
+  action();
+}
+
+// ========== 初始化 ==========
+function init() {
+  state.layers = [{ tiles: {}, stacks: {} }, { tiles: {}, stacks: {} }];
+  state.currentLayer = 0;
+  const restored = loadAutosave();
+  updateUI();
+  updateLegend();
+  resizeCanvas();
+  fitView();
+  updateUndoButtons();
+  if (restored) toast('已恢复上次未导出的编辑内容', 'ok');
+}
+
+// ========== 绘制 ==========
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.width / dpr, h = canvas.height / dpr;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const topPad = worldTopPad();
+  const bx = BOARD_PAD, by = topPad + BOARD_PAD;
+  const boardW = GRID_COLS * CELL - BOARD_PAD * 2;
+  const boardH = GRID_ROWS * CELL - BOARD_PAD * 2;
+
+  ctx.setTransform(dpr * view.scale, 0, 0, dpr * view.scale, dpr * view.ox, dpr * view.oy);
+  const lw = 1 / view.scale; // 缩放后仍约 1 屏像素的线宽
+
+  // 板底（紧贴牌区，四周留 6px 内边距）
+  ctx.fillStyle = '#fdfaf3';
+  ctx.beginPath();
+  ctx.roundRect(bx, by, boardW, boardH, 6 * lw);
+  ctx.fill();
+  ctx.strokeStyle = '#ddd2ba';
+  ctx.lineWidth = lw * 2;
+  ctx.stroke();
+
+  // 网格
+  if (state.showGrid) {
+    ctx.strokeStyle = 'rgba(140,115,75,0.12)';
+    ctx.lineWidth = lw;
+    for (let i = 0; i <= GRID_COLS; i++) {
+      ctx.beginPath(); ctx.moveTo(bx + i * CELL, by); ctx.lineTo(bx + i * CELL, by + boardH); ctx.stroke();
+    }
+    for (let i = 0; i <= GRID_ROWS; i++) {
+      ctx.beginPath(); ctx.moveTo(bx, by + i * CELL); ctx.lineTo(bx + boardW, by + i * CELL); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(140,115,75,0.25)';
+    for (let i = 0; i <= GRID_COLS; i += 2) {
+      ctx.beginPath(); ctx.moveTo(bx + i * CELL, by); ctx.lineTo(bx + i * CELL, by + boardH); ctx.stroke();
+    }
+    for (let i = 0; i <= GRID_ROWS; i += 2) {
+      ctx.beginPath(); ctx.moveTo(bx, by + i * CELL); ctx.lineTo(bx + boardW, by + i * CELL); ctx.stroke();
+    }
+  }
+
+  // 中心对称轴（牌区正中）
+  const cx = bx + GRID_COLS / 2 * CELL;
+  ctx.strokeStyle = 'rgba(184,134,11,0.35)';
+  ctx.lineWidth = lw * 1.5;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by + boardH); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 画所有层（俯视模式）
+  const layersToDraw = state.showAll ? state.layers : [state.layers[state.currentLayer]];
+  const startLayer = state.showAll ? 0 : state.currentLayer;
+  const issues = state.showIssues ? findSupportIssues() : null;
+
+  layersToDraw.forEach((layer, i) => {
+    const layerIdx = startLayer + i;
+    const isCurrent = layerIdx === state.currentLayer;
+    // 圆盘画笔:gapLayer 以上的层整体半透明(凸显"圆盘会夹在这")
+    const fadedByDisc = state.brush === 'disc' && layerIdx >= state.discGap + 1;
+    ctx.save();
+    if (fadedByDisc) ctx.globalAlpha = 0.35;
+    Object.keys(layer.tiles).forEach(key => {
+      const tile = layer.tiles[key];
+      const [r, c0] = key.split(',').map(Number);
+      const isHover = state.hoverTile && state.hoverTile.key === key && state.hoverTile.layer === layerIdx;
+      // 俯视编辑时，非当前层上的吐牌机(及其队列)太抢眼 → 调淡一些，方便看清当前层
+      // 普通麻将保持原样，只对 spitter 生效
+      if (isCurrent || (tile.type !== 'spitter' && tile.type !== 'spitterQueue')) {
+        drawTile(c0, r, layerIdx, tile, isCurrent, isHover, issues && layerIdx > 0 && issues.has(key));
+      } else {
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        drawTile(c0, r, layerIdx, tile, isCurrent, isHover, issues && layerIdx > 0 && issues.has(key));
+        ctx.restore();
+      }
+    });
+    // 绘制吐牌机队列（堆叠牌）
+    Object.keys(layer.stacks || {}).forEach(key => {
+      const stack = layer.stacks[key];
+      const [r, c0] = key.split(',').map(Number);
+      stack.forEach((st, idx) => {
+        // 每层稍微偏移，显示堆叠效果
+        if (isCurrent) {
+          drawTile(c0, r, layerIdx, { type: 'spitterQueue', order: st.order }, false, false, false);
+        } else {
+          ctx.save();
+          ctx.globalAlpha = 0.4;
+          drawTile(c0, r, layerIdx, { type: 'spitterQueue', order: st.order }, false, false, false);
+          ctx.restore();
+        }
+      });
+    });
+    ctx.restore(); // 对应 fadedByDisc 的 ctx.save()
+  });
+
+  // 圆盘画笔激活时:对上层(>= gapLayer+1 的所有层)做半透明处理,凸显"圆盘会插在这里"
+  // 圆盘(夹层叠在麻将之间)
+  drawDiscs();
+  // 圆盘画笔下:鼠标光标处画圆盘预览
+  if (state.brush === 'disc' && state.hoverCell) drawDiscPreview();
+
+  // 旋转画笔激活时：画旋转中心 + 外圈预览
+  if (state.brush === 'rotation') drawRotationOverlay();
+
+  if (state.hoverCell) drawHover();
+
+  updateStatusbar();
+}
+
+// ===== 圆盘绘制 =====
+// 圆盘占一个麻将位(2x2 子格)。视觉:紫红色填充圆 + 边界圈,半径 = 1 张麻将(2 子格半径)
+// visualLayer = gapLayer + 0.5(让 z-order 自然落在 LN 和 LN+1 之间,与奇数层偏移语义一致)
+function discVisualLayer(disc) { return disc.gapLayer + 0.5; }
+
+function drawDiscAt(disc, alpha) {
+  // 圆心 = (col, row) 子格中心(任意整数,可放在麻将位中心,也可放在 4 麻将交界的"田字中心")
+  // 与 tile 一致:渲染用 dCol = col + DISPLAY_OFFSET_COL(棋盘原点 = 内部 col=-5 = 显示 col=0)
+  // 子格中心 = cell 起点 + CELL/2 —— 与 demo renderDiscs 用 cellPx/2 一致
+  const cx = BOARD_PAD + (disc.col + DISPLAY_OFFSET_COL) * CELL + CELL / 2;
+  const cy = worldTopPad() + BOARD_PAD + (disc.row + DISPLAY_OFFSET_ROW) * CELL + CELL / 2;
+  // 半径 = 1 张麻将边长 = 2 子格(直径 4 子格,圆盘能盖到周围 2x2 麻将位的各一角)
+  const r = 2 * CELL;
+  const lw = 1.5 / view.scale;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // 紫色填充圆
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  grad.addColorStop(0, 'rgba(180, 90, 200, 0.55)');
+  grad.addColorStop(1, 'rgba(120, 50, 160, 0.45)');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  // 边线
+  ctx.strokeStyle = 'rgba(140, 60, 180, 0.95)';
+  ctx.lineWidth = lw * 2;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  // 中心小圆 + 缝隙层标签
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath(); ctx.arc(cx, cy, CELL * 0.25, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#5a1f78';
+  ctx.font = `bold ${Math.round(CELL * 0.32)}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('L' + disc.gapLayer, cx, cy);
+  ctx.restore();
+}
+
+function drawDiscs() {
+  if (!state.discs.length) return;
+  // 按 visualLayer 升序绘制(让高的 disc 盖住低的 disc,符合 z-order 习惯)
+  const sorted = state.discs.slice().sort((a, b) => discVisualLayer(a) - discVisualLayer(b));
+  for (const d of sorted) {
+    drawDiscAt(d, state.selectedDiscId === d.id ? 1.0 : 0.85);
+  }
+}
+
+function drawDiscPreview() {
+  const { col, row } = state.hoverCell;
+  const overlapTile = discOverlapsAnyTile(row, col);
+  const overlapDisc = discOverlapsOtherDisc(row, col, null);
+  drawDiscAt({ gapLayer: state.discGap, row, col }, overlapTile || overlapDisc ? 0.25 : 0.45);
+  // hoverCell 是子格坐标(支持任意整数 = 田字中心等),虚线圆环直接画在该子格中心
+  if (!overlapDisc) {
+    const cx = BOARD_PAD + (col + DISPLAY_OFFSET_COL) * CELL + CELL / 2;
+    const cy = worldTopPad() + BOARD_PAD + (row + DISPLAY_OFFSET_ROW) * CELL + CELL / 2;
+    const r = 2 * CELL;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(60, 180, 100, 0.9)';
+    ctx.lineWidth = 2 / view.scale;
+    ctx.setLineDash([6 / view.scale, 4 / view.scale]);
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// 旋转画笔激活时的视觉反馈：旋转中心 + 旋转圈 + 高亮会旋转的牌
+function drawRotationOverlay() {
+  const ctx = canvas.getContext('2d');
+  // 优先用已发送的关卡配置（与 demo 实际保持一致），其次用输入框的值
+  const cfg = state.sentRotation || (() => {
+    const cr = parseInt(document.getElementById('rotCenterRow').value);
+    const cc = parseInt(document.getElementById('rotCenterCol').value);
+    const r = parseInt(document.getElementById('rotRadius').value);
+    if (isNaN(cr) || isNaN(cc) || isNaN(r) || r <= 0) return null;
+    return { centerRow: cr, centerCol: cc, radius: r, direction: state.rotationDir || 'clockwise' };
+  })();
+  if (!cfg) return;
+  const centerR = cfg.centerRow;
+  const centerC = cfg.centerCol;
+  const radius = cfg.radius;
+  const direction = cfg.direction || 'clockwise';
+  const color = direction === 'clockwise' ? '#e85d6d' : '#5b8fe8';
+
+  // canvas 已由 draw() 设置过 scale/translate（视图缩放），这里直接用世界坐标绘制
+  ctx.save();
+
+  // 旋转范围 = center ± radius（永远显示完整区域，不依赖麻将存不存在）
+  const leftC = centerC - radius;
+  const rightC = centerC + radius;
+  const topR = centerR - radius;
+  const bottomR = centerR + radius;
+  // 外框：完整旋转区域的边界
+  const outerX = BOARD_PAD + (leftC + DISPLAY_OFFSET_COL) * CELL;
+  const outerY = BOARD_PAD + worldTopPad() + (topR + DISPLAY_OFFSET_ROW) * CELL;
+  const outerW = (radius * 2 + 2) * CELL;
+  const outerH = (radius * 2 + 2) * CELL;
+  // 内框：比外框缩小一整块麻将的距离（2×CELL = 80px），
+  // 中间夹的环形区域 = 一整块麻将大小 = "夹在范围内的麻将会旋转"的视觉表达
+  const inset = 2 * CELL;
+  const innerX = outerX + inset;
+  const innerY = outerY + inset;
+  const innerW = outerW - 2 * inset;
+  const innerH = outerH - 2 * inset;
+  // 夹着的环形区域：轻微透明红色（顺时针）或蓝色（逆时针）填充
+  ctx.fillStyle = direction === 'clockwise' ? 'rgba(232,93,109,0.18)' : 'rgba(91,143,232,0.18)';
+  ctx.fillRect(outerX, outerY, outerW, outerH);
+  ctx.fillStyle = 'rgba(253,250,243,0.6)';
+  ctx.fillRect(innerX, innerY, innerW, innerH);
+  // 画两条虚线方框
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(outerX, outerY, outerW, outerH);
+  ctx.strokeRect(innerX, innerY, innerW, innerH);
+  ctx.setLineDash([]);
+
+  // 旋转中心（精确在 centerR, centerC 格点上）
+  const centerX = BOARD_PAD + (centerC + DISPLAY_OFFSET_COL) * CELL;
+  const centerY = BOARD_PAD + worldTopPad() + (centerR + DISPLAY_OFFSET_ROW) * CELL;
+
+  // 十字准星（精确指示中心格）
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  const ext = 14 / view.scale;
+  ctx.beginPath();
+  ctx.moveTo(centerX - ext, centerY); ctx.lineTo(centerX + ext, centerY);
+  ctx.moveTo(centerX, centerY - ext); ctx.lineTo(centerX, centerY + ext);
+  ctx.stroke();
+
+  // 中心实心圆点
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 中心上方标方向符号
+  ctx.fillStyle = color;
+  ctx.font = `bold 18px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const dirText = direction === 'clockwise' ? '↻' : '↺';
+  ctx.fillText(dirText, centerX, centerY - 28);
+
+  ctx.restore();
+}
+
+// 俯视模式：牌大小不变，每层往上偏移露出下层
+function drawTile(col, row, layerIdx, tile, isCurrent, isHover, isIssue) {
+  const dCol = col + DISPLAY_OFFSET_COL;
+  const dRow = row + DISPLAY_OFFSET_ROW;
+  // 上层牌每升一层往左偏 3px、往上偏 3px，从侧面能看到错开的层级
+  const x = BOARD_PAD + dCol * CELL - layerIdx * 3;
+  const y = BOARD_PAD + worldTopPad() + dRow * CELL - layerIdx * 3;
+  const w = TILE * CELL, h = TILE * CELL;
+  const pad = 2;
+  const lw = 1 / view.scale;
+
+  let baseColor, accentColor, borderColor;
+  if (tile.type === 'dark') {
+    baseColor = '#5a6d95'; accentColor = '#7c8fb8'; borderColor = '#31427a';
+  } else if (tile.type === 'spitter') {
+    baseColor = '#b06a2a'; accentColor = '#d8954f'; borderColor = '#7a4a12';
+  } else if (tile.type === 'spitterQueue') {
+    baseColor = '#c97a1f'; accentColor = '#e8a54f'; borderColor = '#8a4a12';
+  } else {
+    const lc = LAYER_COLORS[Math.min(layerIdx, LAYER_COLORS.length - 1)];
+    baseColor = lc.base; accentColor = lc.accent;
+    borderColor = isCurrent ? '#8b5a2b' : 'rgba(58,46,31,0.35)';
+  }
+
+  ctx.save();
+  if (isHover) ctx.globalAlpha = 0.45;
+
+  // 绘制牌的3D厚度效果(右侧面和底面的侧面板)
+  if (layerIdx > 0) {
+    const depth = 10; // 侧面板宽度
+
+    // 先绘制侧面板(在牌面下方)
+    // 右侧面 - 深色
+    const rightDarken = darkenColor(baseColor, 0.65);
+    ctx.fillStyle = rightDarken;
+    ctx.fillRect(x + w - pad, y + pad + depth, depth, h - pad * 2 - depth);
+
+    // 底面 - 更深色
+    const bottomDarken = darkenColor(baseColor, 0.45);
+    ctx.fillStyle = bottomDarken;
+    ctx.fillRect(x + pad + depth, y + h - pad, w - pad * 2 - depth, depth);
+
+    // 右下角的小三角(连接右侧面和底面)
+    ctx.fillStyle = darkenColor(baseColor, 0.3);
+    ctx.beginPath();
+    ctx.moveTo(x + w - pad, y + h - pad);
+    ctx.lineTo(x + w - pad + depth, y + h - pad);
+    ctx.lineTo(x + w - pad, y + h - pad + depth);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // 牌面
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(x + pad, y + pad, w - 2 * pad, h - 2 * pad);
+  ctx.fillStyle = accentColor;
+  ctx.fillRect(x + pad + CELL * 0.15, y + pad + CELL * 0.15, w - 2 * pad - CELL * 0.3, h - 2 * pad - CELL * 0.3);
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = isCurrent ? 2.5 * lw + lw : 1.2 * lw;
+  ctx.strokeRect(x + pad, y + pad, w - 2 * pad, h - 2 * pad);
+
+  // 悬空问题高亮
+  if (isIssue) {
+    ctx.strokeStyle = '#c0453e';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x - 2, y - 2, w + 4, h + 4);
+  }
+
+  // 类型图标 / 坐标
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (state.showCoord) {
+    ctx.fillStyle = 'rgba(40,30,15,0.85)';
+    ctx.font = `bold ${CELL * 0.5}px monospace`;
+    ctx.fillText(`${row},${col}`, x + w / 2, y + h / 2);
+  }
+  if (tile.type === 'dark') {
+    ctx.fillStyle = '#dfe6f5';
+    ctx.font = `bold ${CELL * 0.8}px serif`;
+    ctx.fillText('?', x + w / 2, y + h / 2);
+  } else if (tile.type === 'spitter') {
+    ctx.fillStyle = '#ffe9a8';
+    ctx.font = `bold ${CELL * 0.7}px sans-serif`;
+    const arrows = { up: '▲', down: '▼', left: '◀', right: '▶' };
+    ctx.fillText(arrows[tile.dir] || '⚙', x + w / 2, y + h / 2 - CELL * 0.15);
+    ctx.fillStyle = '#fff';
+    ctx.font = `${CELL * 0.3}px sans-serif`;
+    ctx.fillText('×' + tile.count, x + w / 2, y + h / 2 + CELL * 0.4);
+  } else if (state.showTypeId && tile.typeId != null) {
+    // 牌面 Type ID 标签(导入时保留的花色),开关「牌面ID」
+    ctx.fillStyle = 'rgba(30,20,10,0.72)';
+    ctx.font = `bold ${CELL * 0.38}px monospace`;
+    ctx.fillText(tile.typeId, x + w / 2, y + h / 2);
+  }
+
+  ctx.restore();
+}
+
+// 辅助函数:将颜色变暗
+function darkenColor(hex, factor) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgb(${Math.round(r * factor)},${Math.round(g * factor)},${Math.round(b * factor)})`;
+}
+
+// 悬停预览
+function drawHover() {
+  const { col, row, valid } = state.hoverCell;
+  const layer = state.layers[state.currentLayer];
+  if (!layer) return;
+
+  const key = `${row},${col}`;
+  const hasTile = key in layer.tiles;
+
+  const dCol = col + DISPLAY_OFFSET_COL;
+  const dRow = row + DISPLAY_OFFSET_ROW;
+  const x = BOARD_PAD + dCol * CELL;
+  const y = BOARD_PAD + worldTopPad() + dRow * CELL - state.currentLayer * CELL * 0.2;
+  const w = TILE * CELL, h = TILE * CELL;
+
+  const color = hasTile ? '#c97b1f' : (valid ? '#b8860b' : '#c0453e');
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([8, 4]);
+  ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.12;
+  ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+  ctx.globalAlpha = 1;
+
+  // 禁止符号
+  if (!valid && !hasTile) {
+    ctx.strokeStyle = '#c0453e';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.28, y + h * 0.28);
+    ctx.lineTo(x + w * 0.72, y + h * 0.72);
+    ctx.stroke();
+  }
+}
+
+// ========== 状态栏 ==========
+function updateStatusbar() {
+  document.getElementById('sbCoord').textContent =
+    state.hoverCell ? `(${state.hoverCell.row}, ${state.hoverCell.col})` : '—';
+  document.getElementById('sbLayer').textContent = 'L' + state.currentLayer;
+
+  let n = 0, d = 0, s = 0;
+  state.layers.forEach(layer => {
+    Object.values(layer.tiles).forEach(t => {
+      if (t.type === 'normal') n++;
+      else if (t.type === 'dark') d++;
+      else if (t.type === 'spitter') s++;
+    });
+  });
+  document.getElementById('sbCounts').innerHTML =
+    `普通 <b>${n}</b> · 暗 <b>${d}</b> · 吐 <b>${s}</b> · 共 <b>${n + d + s}</b>`;
+
+  const sb = document.getElementById('sbSupport');
+  const txt = document.getElementById('sbSupportText');
+  if (state.showAll) {
+    const issueCount = findSupportIssues().size;
+    txt.innerHTML = issueCount === 0
+      ? '<span class="good">✓ 通过</span>'
+      : `<span class="bad">✗ ${issueCount} 处悬空</span>`;
+    sb.classList.toggle('active', state.showIssues && issueCount > 0);
+  } else {
+    txt.textContent = '（仅显示全部时）';
+    sb.classList.remove('active');
+  }
+
+  document.getElementById('sbZoom').textContent = Math.round(view.scale * 100) + '%';
+}
+
+document.getElementById('sbSupport').addEventListener('click', () => {
+  state.showIssues = !state.showIssues;
+  if (state.showIssues) toast('悬空牌已用红框标出', 'info');
+  draw();
+});
+
+// ========== 鼠标 ==========
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 1 || (e.button === 0 && state.spaceDown)) {
+    // 中键 / 空格+左键：平移
+    state.panning = true;
+    state.panStart = { x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy };
+    canvasWrap.classList.add('panning');
+    e.preventDefault();
+    return;
+  }
+  if (e.button !== 0 && e.button !== 2) return;
+  if (!state.hoverCell) return;
+
+  // 圆盘画笔:点已有圆盘 → 删除/选中;点空白 → 放置(右键删除最近圆盘)
+  // 不进入 painting 笔画,每次点击独立事件
+  if (state.brush === 'disc') {
+    const { col, row } = state.hoverCell;
+    // 检查点中是否已有圆盘(2x2 子格范围)
+    const hit = state.discs.find(d => {
+      const cells = discOccupiesCells(d.row, d.col);
+      return cells.has(`${row},${col}`);
+    });
+    const before = serializeState();
+    if (hit) {
+      // 单击已有圆盘 → 删除
+      state.discs = state.discs.filter(d => d.id !== hit.id);
+      if (state.selectedDiscId === hit.id) state.selectedDiscId = null;
+      pushHistory(before);
+      draw(); updateUI();
+      return;
+    } else if (e.button === 0) {
+      // 放置:防重叠
+      if (discOverlapsAnyTile(row, col)) {
+        toast('该位置与麻将重叠,无法放置', 'err');
+        return;
+      }
+      if (discOverlapsOtherDisc(row, col, null)) {
+        toast('该位置与已有圆盘重叠', 'err');
+        return;
+      }
+      state.discs.push({
+        id: nextDiscId(),
+        gapLayer: state.discGap,
+        row, col,
+      });
+      pushHistory(before);
+      draw(); updateUI();
+      return;
+    }
+    return;
+  }
+  if (!state.hoverCell.valid && state.snapToSupport && state.currentLayer > 0) return;
+
+  // 吐牌机画笔:再次点击已存在的吐牌机 → 直接消除(像普通牌那样,点已存在的就擦除)
+  // 只在 spitter 画笔下生效
+  const layer0 = state.layers[state.currentLayer];
+  const key0 = `${state.hoverCell.row},${state.hoverCell.col}`;
+  if (state.brush === 'spitter' && layer0.tiles[key0] && layer0.tiles[key0].type === 'spitter') {
+    const before = serializeState();
+    const sp = layer0.tiles[key0];
+    const offset = { up: [-2, 0], down: [2, 0], left: [0, -2], right: [0, 2] }[sp.dir || 'up'] || [-2, 0];
+    const tKey = `${state.hoverCell.row + offset[0]},${state.hoverCell.col + offset[1]}`;
+    if (layer0.stacks[tKey]) delete layer0.stacks[tKey];
+    delete layer0.tiles[key0];
+    if (before !== serializeState()) pushHistory(before);
+    draw(); updateUI();
+    return;
+  }
+
+  // 旋转画笔只设置中心点，不进入 painting 状态（否则移动鼠标会画/擦麻将）
+  if (e.button === 0 && state.brush === 'rotation') {
+    document.getElementById('rotCenterRow').value = state.hoverCell.row;
+    document.getElementById('rotCenterCol').value = state.hoverCell.col;
+    toast('旋转中心已设为 (' + state.hoverCell.row + ', ' + state.hoverCell.col + ')', 'ok');
+    draw();
+    return;
+  }
+
+  state.painting = true;
+  state.strokeSnapshot = serializeState(); // 笔画前快照，mouseup 时入历史
+  const layer = state.layers[state.currentLayer];
+  const { col, row } = state.hoverCell;
+  const key = `${row},${col}`;
+
+  if (e.button === 2) {
+    state.paintMode = 'remove'; // 右键一律擦除
+  } else {
+    const existing = layer.tiles[key];
+    // 重复点击同一位置：吐牌机总是可删除；其他画笔需类型匹配才删除
+    if (existing && (state.brush === 'spitter' ? existing.type === 'spitter' : existing.type === state.brush)) {
+      state.paintMode = 'remove';
+    } else {
+      state.paintMode = 'add';
+    }
+  }
+  paintAt(col, row);
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (state.panning) {
+    view.ox = state.panStart.ox + (e.clientX - state.panStart.x);
+    view.oy = state.panStart.oy + (e.clientY - state.panStart.y);
+    draw();
+    return;
+  }
+
+  const pos = getMousePos(e);
+  const cell = pixelToCell(pos.x, pos.y);
+
+  // 圆盘画笔:floor 取整数 cell(1 cell 单位 snap,像摆麻将)
+  // 圆心 = (col, row) 子格;占地区 = (col±1, row±1) → 跨 3x3 子格,覆盖周围 2x2 麻将位
+  // 鼠标移到 cell N 边界时 disc 跳到 cell N(下次鼠标再过去跳 cell N+1),离散步进像摆麻将
+
+  // 编辑器坐标边界：col -5..5（12 子格 = 6 麻将位）, row -8..6
+  if (cell.col < -6 || cell.col > 6 || cell.row < -9 || cell.row > 7) {
+    state.hoverCell = null;
+    state.hoverTile = null;
+  } else {
+    const valid = hasSupportAt(cell.col, cell.row);
+    state.hoverCell = { col: cell.col, row: cell.row, valid };
+    // 找到当前鼠标位置最顶层的牌
+    let topTile = null;
+    for (let l = state.layers.length - 1; l >= 0; l--) {
+      const layer = state.layers[l];
+      if (layer.tiles[`${cell.row},${cell.col}`]) {
+        topTile = { key: `${cell.row},${cell.col}`, layer: l };
+        break;
+      }
+    }
+    state.hoverTile = topTile;
+  }
+
+  if (state.painting) {
+    if (state.hoverCell && (state.hoverCell.valid || !state.snapToSupport || state.currentLayer === 0)) {
+      paintAt(state.hoverCell.col, state.hoverCell.row);
+    }
+  } else {
+    draw();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  state.hoverCell = null;
+  state.hoverTile = null;
+  draw();
+});
+
+window.addEventListener('mouseup', e => {
+  if (state.panning) {
+    state.panning = false;
+    canvasWrap.classList.remove('panning');
+  }
+  if (state.painting) {
+    state.painting = false;
+    // 笔画结束：有实际变化才入历史
+    if (state.strokeSnapshot !== null && state.strokeSnapshot !== serializeState()) {
+      pushHistory(state.strokeSnapshot);
+    }
+    state.strokeSnapshot = null;
+  }
+});
+
+// 缩放（滚轮 / Ctrl+滚轮 都以光标为中心；平移用空格或中键拖拽）
+canvasWrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  const newScale = Math.min(3.5, Math.max(0.3, view.scale * factor));
+  const k = newScale / view.scale;
+  view.ox = mx - (mx - view.ox) * k;
+  view.oy = my - (my - view.oy) * k;
+  view.scale = newScale;
+  draw();
+}, { passive: false });
+
+function getMousePos(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function tileOccupiesCells(key) {
+  // 牌 key="row,col" 占子格 (row,col) (row,col+1) (row+1,col) (row+1,col+1)
+  const [r, c] = key.split(',').map(Number);
+  return new Set([
+    `${r},${c}`, `${r},${c+1}`, `${r+1},${c}`, `${r+1},${c+1}`,
+  ]);
+}
+
+function isPlaceable(layer, key) {
+  // 同一行最多 6 个麻将（横向 12 子格 / 2 格宽）
+  const MAX_PER_ROW = 6;
+  const [newRow] = key.split(',').map(Number);
+  let rowCount = 0;
+  for (const existingKey of Object.keys(layer.tiles)) {
+    const [er] = existingKey.split(',').map(Number);
+    if (Math.abs(er - newRow) < 2) rowCount++;
+  }
+  if (rowCount >= MAX_PER_ROW && !layer.tiles[key]) {
+    return false;
+  }
+  const newCells = tileOccupiesCells(key);
+  for (const existingKey of Object.keys(layer.tiles)) {
+    if (existingKey === key) continue;
+    const t = layer.tiles[existingKey];
+    // 同层 spitter 占 1 子格,会被新普通牌的 2x2 范围覆盖 — 允许替换(后面 paintAt 会处理)
+    // 其他普通牌/暗牌才需要检查 2x2 重叠
+    if (t.type === 'spitter') {
+      const tCells = new Set([existingKey]); // spitter 只占 1 个子格(即它的 key)
+      // 检查 spitter 子格是否被新普通牌的 2x2 子格完全包含(允许覆盖);否则允许(邻接不重叠)
+      // 实际上邻接不重叠就是 ok,只需要确认新普通牌的子格不会与 spitter 邻接冲突
+      // 简化:spitter 不参与 isPlaceable 检查,允许新普通牌放上
+      continue;
+    }
+    const existCells = tileOccupiesCells(existingKey);
+    for (const cell of newCells) {
+      if (existCells.has(cell)) return false;
+    }
+  }
+  return true;
+}
+
+function paintAt(col, row) {
+  const layer = state.layers[state.currentLayer];
+  if (col < -5 || col > 5 || row < -8 || row > 6) return;
+
+  const key = `${row},${col}`;
+  const mcol = mirrorCol(col, state.currentLayer);
+  const mkey = `${row},${mcol}`;
+
+  if (state.paintMode === 'add') {
+    // spitter 本体只占 1 格（不像普通牌占 2x2 子格），所以用单格检查
+    if (state.brush === 'spitter') {
+      // 检查能否放置:spitter 视觉占 2x2 cell(子格 row..row+1, col..col+1)
+      // 同层:spitter 视觉不能与已有 spitter 重叠(邻接 1 cell 视觉重叠 1 cell,禁止)
+      // 跨层:不限制——spitter 视觉范围内的普通牌保留(层叠关系)
+      // 注:双击 spitter 走 mousedown 双击分支,不在 paintAt 这里
+      const spitterArea = [`${row},${col}`, `${row},${col+1}`, `${row+1},${col}`, `${row+1},${col+1}`];
+      // 同层 spitter 视觉重叠检查(邻接 1 cell 拒绝)
+      for (const k of Object.keys(layer.tiles)) {
+        const t = layer.tiles[k];
+        if (t.type !== 'spitter') continue;
+        const [tr, tc] = k.split(',').map(Number);
+        const tArea = [`${tr},${tc}`, `${tr},${tc+1}`, `${tr+1},${tc}`, `${tr+1},${tc+1}`];
+        for (const tsk of tArea) {
+          if (spitterArea.includes(tsk)) return;
+        }
+      }
+      // 同层普通牌/暗牌:跟普通麻将一样,spitter 视觉 2x2 要么完全落在空处,
+      // 要么恰好覆盖一张牌(shared==4,替换);禁止"半压"在两张牌中间的缝(shared 1~3)
+      for (const k of Object.keys(layer.tiles)) {
+        const t = layer.tiles[k];
+        if (t.type === 'spitter' || t.type === 'spitterQueue') continue;
+        const tCells = tileOccupiesCells(k);
+        let shared = 0;
+        for (const cell of spitterArea) if (tCells.has(cell)) shared++;
+        if (shared > 0 && shared < 4) return; // 部分重叠 = 夹缝,禁止放置
+      }
+      // 吐牌机吐出的牌(目标位)也要满足支撑:目标位=getSpitterTarget(同层,+dir偏移 2 格)。
+      // 若目标位下层无支撑(空),则这里不能放吐牌机 — 与吐牌机本体自身的支撑判断一致
+      const tp = getSpitterTarget(state.currentLayer, row, col, state.spitterDir);
+      if (!tp) {
+        toast('吐牌机指向位置超出边界', 'err');
+        return;
+      }
+      if (state.currentLayer > 0 && !hasSupportAtLayer(state.currentLayer, tp.col, tp.row)) {
+        toast('吐牌机吐牌目标位下方是空格，无法放置', 'err');
+        return;
+      }
+      // 注:不做镜像位置重叠检查——spitter 是"不对称"放置(下面 2229 明确跳过镜像写入),
+      // 若还按镜像位置查重叠,会把已有 spitter 镜像一侧全拦住,导致左右放置不对称(例如右侧能放、左侧全被拦)
+      // 通过检查后:放 spitter(不跨层删除任何牌)
+    } else {
+      if (!isPlaceable(layer, key)) return;
+      if (state.symmetric && mcol !== col && !isPlaceable(layer, mkey)) return;
+      const newCells = tileOccupiesCells(key);
+      if (layer.tiles[key]) {
+        const oldCells = tileOccupiesCells(key);
+        const sameAll = [...newCells].every(c => oldCells.has(c));
+        if (!sameAll) return;
+      }
+      if (state.symmetric && mcol !== col && layer.tiles[mkey]) {
+        const oldCells = tileOccupiesCells(mkey);
+        const sameAll = [...tileOccupiesCells(mkey)].every(c => oldCells.has(c));
+        if (!sameAll) return;
+      }
+    }
+
+    const tileData = {
+      type: state.brush,
+      dir: state.spitterDir,
+      count: parseInt(document.getElementById('spitterCount').value) || 3,
+    };
+    layer.tiles[key] = { ...tileData };
+
+    // 吐牌机：自动在指向位置堆叠队列牌
+    if (state.brush === 'spitter') {
+      const targetPos = getSpitterTarget(state.currentLayer, row, col, state.spitterDir);
+      if (!targetPos) {
+        toast('吐牌机指向位置超出边界', 'err');
+        return;
+      }
+      // 检查吐牌机本身是否被覆盖（被覆盖则消不掉）
+      const covered = state.layers.some(otherL => otherL !== layer && otherL.tiles[`${row},${col}`] &&
+        Math.abs(otherL.tiles[`${row},${col}`].layer - layer.layer) > 0);
+      const selfCover = state.layers.some((otherL, i) => {
+        if (i === state.currentLayer) return false;
+        const k = `${row},${col}`;
+        if (!otherL.tiles[k]) return false;
+        return otherL.tiles[k].layer > layer.layer;
+      });
+      if (selfCover) {
+        // 吐牌机本身被覆盖 = 不可点。先把上方覆盖的牌清掉。
+        const upperKeys = [];
+        for (let li = layer.layer + 1; li < state.layers.length; li++) {
+          const k = `${row},${col}`;
+          if (state.layers[li].tiles[k]) {
+            upperKeys.push({ layer: li, key: k });
+          }
+        }
+        // 如果只需要保证吐牌机可点,需要升起上层牌 — 这里简化为:吐牌机本身不能被覆盖
+      }
+      // 吐牌机本体不需要用户手动堆队列牌——队列牌由生成器在填色时自动生成 count 张
+      // 但 target 位置必须有支撑牌(L0 任意类型)才能让队列牌有底
+      // 如果 target 是空的,生成器自动在 target L0 补一张普通牌作为支撑
+    }
+
+    if (state.symmetric && mcol !== col && state.brush !== 'spitter') {
+      const mTile = { ...tileData };
+      if (mTile.type === 'spitter') {
+        if (mTile.dir === 'left') mTile.dir = 'right';
+        else if (mTile.dir === 'right') mTile.dir = 'left';
+      }
+      layer.tiles[mkey] = mTile;
+    }
+  } else {
+    // erase 模式：如果删的是 spitter 本体，清理对应 target 的 stacks（否则 stack 残留但无 spitter tile,生成会报"队列牌 0 张"）
+    if (layer.tiles[key] && layer.tiles[key].type === 'spitter') {
+      const sp = layer.tiles[key];
+      const offset = { up: [-2, 0], down: [2, 0], left: [0, -2], right: [0, 2] }[sp.dir || 'up'] || [-2, 0];
+      const tKey = `${row + offset[0]},${col + offset[1]}`;
+      if (layer.stacks[tKey]) delete layer.stacks[tKey];
+    }
+    delete layer.tiles[key];
+    if (state.symmetric && mcol !== col) {
+      // spitter 画笔固定不对称:擦 spitter 不动镜像位置（即使镜像位置是普通牌也不删）
+      if (state.brush === 'spitter') {
+        // 仅当镜像位置也是 spitter 时才删（保持多个 spitter 对称）
+        if (layer.tiles[mkey] && layer.tiles[mkey].type === 'spitter') {
+          const sp = layer.tiles[mkey];
+          const offset = { up: [-2, 0], down: [2, 0], left: [0, -2], right: [0, 2] }[sp.dir || 'up'] || [-2, 0];
+          const tKey = `${row + offset[0]},${mcol + offset[1]}`;
+          if (layer.stacks[tKey]) delete layer.stacks[tKey];
+          delete layer.tiles[mkey];
+        }
+      } else {
+        // 普通/暗牌画笔:对称镜像擦除
+        const mType = layer.tiles[mkey] && layer.tiles[mkey].type;
+        if (mType === 'spitter') {
+          const sp = layer.tiles[mkey];
+          const offset = { up: [-2, 0], down: [2, 0], left: [0, -2], right: [0, 2] }[sp.dir || 'up'] || [-2, 0];
+          const tKey = `${row + offset[0]},${mcol + offset[1]}`;
+          if (layer.stacks[tKey]) delete layer.stacks[tKey];
+          delete layer.tiles[mkey];
+        } else if (mType === 'normal' || mType === 'dark') {
+          delete layer.tiles[mkey];
+        }
+      }
+    }
+  }
+
+  draw();
+  updateUI();
+}
+
+// 计算吐牌机指向的目标位置
+function getSpitterTarget(layer, row, col, dir) {
+  let tRow = row, tCol = col, tLayer = layer;
+  switch (dir) {
+    case 'up': tRow = row - 2; break;
+    case 'down': tRow = row + 2; break;
+    case 'left': tCol = col - 2; break;
+    case 'right': tCol = col + 2; break;
+  }
+  // 检查边界
+  if (tCol < -5 || tCol > 5 || tRow < -8 || tRow > 6) return null;
+  return { layer: tLayer, row: tRow, col: tCol };
+}
+
+// ========== 键盘 ==========
+window.addEventListener('keydown', e => {
+  const tag = e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+    e.preventDefault();
+    redo();
+    return;
+  }
+  if (e.key === ' ') {
+    e.preventDefault();
+    state.spaceDown = true;
+    canvasWrap.classList.add('panning');
+    return;
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && state.hoverTile) {
+    // 删除悬停的牌（作用于悬停牌所在层？统一作用于当前层同位+镜像）
+    const before = serializeState();
+    const layer = state.layers[state.currentLayer];
+    if (state.hoverCell) {
+      const key = `${state.hoverCell.row},${state.hoverCell.col}`;
+      const mkey = `${state.hoverCell.row},${mirrorCol(state.hoverCell.col, state.currentLayer)}`;
+      // 删除 spitter 本体时，清理对应 target 的 stacks
+      if (layer.tiles[key] && layer.tiles[key].type === 'spitter') {
+        const sp = layer.tiles[key];
+        const offset = { up: [-2, 0], down: [2, 0], left: [0, -2], right: [0, 2] }[sp.dir || 'up'] || [-2, 0];
+        const tKey = `${state.hoverCell.row + offset[0]},${state.hoverCell.col + offset[1]}`;
+        if (layer.stacks[tKey]) delete layer.stacks[tKey];
+      }
+      delete layer.tiles[key];
+      if (state.symmetric && mkey !== key) delete layer.tiles[mkey];
+      if (before !== serializeState()) {
+        pushHistory(before);
+        draw(); updateUI();
+      }
+    }
+    return;
+  }
+
+  const k = e.key.toLowerCase();
+  if (k === 'q' && state.currentLayer > 0) { state.currentLayer--; updateUI(); draw(); }
+  if (k === 'e' && state.currentLayer < state.layers.length - 1) { state.currentLayer++; updateUI(); draw(); }
+  if (k === 's') toggleSym();
+  if (k === 'a') toggleAll();
+  if (k === '1') setBrush('normal');
+  if (k === '2') setBrush('dark');
+  if (k === '3') setBrush('spitter');
+});
+window.addEventListener('keyup', e => {
+  if (e.key === ' ') {
+    state.spaceDown = false;
+    if (!state.panning) canvasWrap.classList.remove('panning');
+  }
+});
+
+// ========== 层操作 ==========
+function addLayer() {
+  const before = serializeState();
+  state.layers.push({ tiles: {} });
+  state.currentLayer = state.layers.length - 1;
+  pushHistory(before);
+  updateUI(); updateLegend(); draw();
+}
+
+function duplicateLayer() {
+  const before = serializeState();
+  const src = state.layers[state.currentLayer];
+  const copy = { tiles: JSON.parse(JSON.stringify(src.tiles)) };
+  state.layers.splice(state.currentLayer + 1, 0, copy);
+  state.currentLayer = state.currentLayer + 1;
+  pushHistory(before);
+  updateUI(); updateLegend(); draw();
+  toast('已复制为新层 L' + state.currentLayer, 'ok');
+}
+
+function deleteLayer(btn) {
+  if (state.layers.length <= 1) { toast('至少保留一层', 'err'); return; }
+  armConfirm(btn, '再次点击确认删除', () => {
+    const before = serializeState();
+    state.layers.splice(state.currentLayer, 1);
+    if (state.currentLayer >= state.layers.length) state.currentLayer = state.layers.length - 1;
+    pushHistory(before);
+    updateUI(); updateLegend(); draw();
+  });
+}
+
+// ========== 画笔 ==========
+function setBrush(brush) {
+  state.brush = brush;
+  document.querySelectorAll('.brush-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.brush === brush);
+  });
+  document.getElementById('spitterPanel').style.display = brush === 'spitter' ? 'block' : 'none';
+  document.getElementById('rotationPanel').style.display = brush === 'rotation' ? 'block' : 'none';
+  document.getElementById('discPanel').style.display = brush === 'disc' ? 'block' : 'none';
+  if (brush !== 'disc') state.selectedDiscId = null; // 切走画笔时取消选中高亮
+  draw();
+}
+
+function setDiscGap(g) {
+  state.discGap = g;
+  draw();
+}
+
+// 圆盘覆盖范围(以圆心为中心的 3x3 子格 = 半径 1 子格)
+// 视觉圆盘半径 = 2 子格,但子格级重叠判定用 3x3 box(±1)更接近圆形且便于判定
+function discOccupiesCells(row, col) {
+  return new Set([
+    `${row-1},${col-1}`, `${row-1},${col}`, `${row-1},${col+1}`,
+    `${row  },${col-1}`, `${row  },${col}`, `${row  },${col+1}`,
+    `${row+1},${col-1}`, `${row+1},${col}`, `${row+1},${col+1}`,
+  ]);
+}
+
+// 圆盘占用范围半径(1 子格,实际 2x2 子格)
+function discRadiusCells() { return 1; }
+
+// 在指定缝隙层,圆盘与所有麻将的 2x2 footprint 是否重叠(放置时防重叠)
+// 圆盘机制本来就设计为"盖住麻将 / 被麻将盖住(钥匙)",所以任何层麻将重叠都允许
+// 此函数保留为空集合,只保留接口语义;真正的防重叠在 discOverlapsOtherDisc
+function discOverlapsAnyTile(discRow, discCol) {
+  return false;
+}
+
+// 圆盘之间是否重叠(按视觉圆半径 2 子格,圆心距 < 4 子格才算重叠)
+// box(3x3)判定会误判相邻位置的"刚好相切",改用欧氏距离 + 视觉半径
+// 阈值 < 2 子格:圆心距 < 2r = 4 子格判重叠 = 圆真正相交(>0 公共区域)
+// 圆心距 ≥ 4 = 圆周最多相切,允许放(田字中心位/田字位可以相邻不同 disc)
+function discOverlapsOtherDisc(discRow, discCol, exceptId) {
+  const r = 2; // 半径阈值(子格):圆心距 ≤ 2 子格视为重叠(>0 公共面积)
+  for (const d of state.discs) {
+    if (d.id === exceptId) continue;
+    const dr = discRow - d.row;
+    const dc = discCol - d.col;
+    if (dr * dr + dc * dc < r * r) return true;
+  }
+  return false;
+}
+
+function setSpitterDir(dir) {
+  state.spitterDir = dir;
+  document.querySelectorAll('#spitterPanel .dir-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.dir === dir);
+  });
+}
+
+function setRotationDir(dir) {
+  state.rotationDir = dir;
+  document.querySelectorAll('#rotationPanel .dir-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.dir === dir);
+  });
+}
+
+// 取消旋转:把中心行/列/半径重置到默认无旋转态,并清掉已发送到 demo 的旋转配置
+function clearRotationCenter() {
+  document.getElementById('rotCenterRow').value = -2;
+  document.getElementById('rotCenterCol').value = 0;
+  document.getElementById('rotRadius').value = 0;
+  state.sentRotation = null;
+  draw();
+  updateUI();
+}
+
+// ========== 开关 ==========
+function bindChip(id, key, redraw) {
+  state[key] = !state[key];
+  document.getElementById(id).classList.toggle('on', state[key]);
+  if (redraw) draw();
+}
+function toggleSym()  { bindChip('symToggle', 'symmetric', false); }
+function toggleAll()  { bindChip('allToggle', 'showAll', true); }
+function toggleSnap() { bindChip('snapToggle', 'snapToSupport', true); }
+function toggleGrid() { bindChip('gridToggle', 'showGrid', true); }
+function toggleCoord(){ bindChip('coordToggle', 'showCoord', true); }
+function toggleTypeId(){ bindChip('typeIdToggle', 'showTypeId', true); }
+
+// ========== 支撑问题（象限规则） ==========
+// 规则：上层牌 4 个象限（左上/右上/左下/右下）的中心子格，
+// 每个子格的正下方都必须有下层牌覆盖（可以是不同的下层牌）
+function quadCovered(lowerArr, r, c) {
+  return lowerArr.some(lt => lt.row <= r && r < lt.row + 2 && lt.col <= c && c < lt.col + 2);
+}
+
+function findSupportIssues() {
+  const issues = new Set();
+  for (let l = 1; l < state.layers.length; l++) {
+    const upper = state.layers[l].tiles;
+    const lower = state.layers[l - 1].tiles;
+    const lowerArr = Object.keys(lower).map(k => {
+      const [lr, lc] = k.split(',').map(Number);
+      return { row: lr, col: lc };
+    });
+
+    Object.keys(upper).forEach(key => {
+      const [ur, uc] = key.split(',').map(Number);
+      const quads = [[ur, uc], [ur, uc + 1], [ur + 1, uc], [ur + 1, uc + 1]];
+      let covered = 0;
+      quads.forEach(([r, c]) => {
+        if (quadCovered(lowerArr, r, c)) covered++;
+      });
+      if (covered < 4) issues.add(key);
+    });
+  }
+  return issues;
+}
+
+// 检查某个位置（指定层）是否有支撑（2x2 footprint 全部被下层覆盖）
+function hasSupportAtLayer(layerIndex, col, row) {
+  if (layerIndex <= 0) return true; // 底层恒有支撑
+  const lower = state.layers[layerIndex - 1].tiles;
+  const lowerArr = Object.keys(lower).map(k => {
+    const [lr, lc] = k.split(',').map(Number);
+    return { row: lr, col: lc };
+  });
+  const quads = [[row, col], [row, col + 1], [row + 1, col], [row + 1, col + 1]];
+  let covered = 0;
+  quads.forEach(([r, c]) => {
+    if (quadCovered(lowerArr, r, c)) covered++;
+  });
+  return covered === 4;
+}
+
+// 检查某个位置（当前层）是否有支撑
+function hasSupportAt(col, row) {
+  if (state.currentLayer === 0) return true;
+  if (!state.snapToSupport) return true;
+  return hasSupportAtLayer(state.currentLayer, col, row);
+}
+
+// ========== UI ==========
+function updateUI() {
+  const list = document.getElementById('layerList');
+  list.innerHTML = '';
+  state.layers.forEach((layer, i) => {
+    const n = Object.keys(layer.tiles).length;
+    const item = document.createElement('div');
+    item.className = 'layer-item' + (i === state.currentLayer ? ' active' : '');
+    item.innerHTML = `<span class="lbl">L${i}${i === 0 ? '（底层）' : ''}</span>
+                      <span class="cnt">${n} 张</span>`;
+    item.onclick = () => { state.currentLayer = i; updateUI(); draw(); };
+    list.appendChild(item);
+  });
+}
+
+function updateLegend() {
+  const legend = document.getElementById('layerLegend');
+  legend.innerHTML = '';
+  state.layers.forEach((_, i) => {
+    const lc = LAYER_COLORS[Math.min(i, LAYER_COLORS.length - 1)];
+    const item = document.createElement('div');
+    item.className = 'layer-legend-item';
+    item.innerHTML = `<div class="layer-swatch" style="background:${lc.base};"></div>L${i}`;
+    legend.appendChild(item);
+  });
+}
+
+// ========== 坐标系统（std 版） ==========
+// std：JSON 的 row=纵向、col=横向，与内部一致，【不再交换】。
+// 画布显示：内部 col(横向) + 5 → 显示 0..10；内部 row(纵向) + 8 → 显示 0..14
+const DISPLAY_OFFSET_COL = 5;  // 内部横向偏移
+const DISPLAY_OFFSET_ROW = 8;  // 内部纵向偏移
+
+// 导入：std JSON 的 (row纵, col横) 与内部一致，直接读入
+function loadFromEditorJSON(json) {
+  const layerMap = {};
+  const specialMap = {};
+  (json.specialTiles || []).forEach(s => {
+    specialMap[`${s.layer},${s.row},${s.col}`] = s;
+  });
+
+  json.tiles.forEach(t => {
+    const l = t.layer;
+    if (!layerMap[l]) layerMap[l] = { tiles: {}, stacks: {} };
+    const key = `${t.row},${t.col}`;
+    const sp = specialMap[`${l},${t.row},${t.col}`];
+    if (sp && sp.type === 'dark') {
+      layerMap[l].tiles[key] = { type: 'dark' };
+    } else if (sp && sp.type === 'spitter') {
+      layerMap[l].tiles[key] = { type: 'spitter', dir: sp.direction || 'up', count: sp.count || 3 };
+    } else if (t.spitterOrder) {
+      // 吐牌机队列牌 → 放入 stacks
+      if (!layerMap[l].stacks[key]) layerMap[l].stacks[key] = [];
+      layerMap[l].stacks[key].push({ type: 'spitterQueue', order: t.spitterOrder });
+    } else {
+      // 普通牌：保留导入的 typeId(牌面)；文件里没有就一直 null(等价"只导形状")
+      layerMap[l].tiles[key] = { type: 'normal', typeId: (t.typeId != null ? t.typeId : null) };
+    }
+  });
+
+  const before = serializeState();
+  const nums = Object.keys(layerMap).map(Number).sort((a, b) => a - b);
+  state.layers = nums.map(n => layerMap[n]);
+  state.discs = (json.discs || []).map(d => ({ id: d.id || nextDiscId(), gapLayer: d.gapLayer, row: d.row, col: d.col }));
+  state.currentLayer = 0;
+  pushHistory(before);
+  updateUI(); updateLegend(); draw();
+}
+
+function exportJSON() {
+  const tiles = [];
+  const specialTiles = [];
+
+  state.layers.forEach((layer, layerIdx) => {
+    Object.keys(layer.tiles).forEach(key => {
+      const tile = layer.tiles[key];
+      const [r, c] = key.split(',').map(Number);
+      tiles.push({ id: 0, layer: layerIdx, row: r, col: c, typeId: (tile.typeId != null ? tile.typeId : null) });
+      if (tile.type !== 'normal') {
+        specialTiles.push({
+          id: 0, type: tile.type, layer: layerIdx, row: r, col: c,
+          direction: tile.dir, count: tile.count,
+        });
+      }
+    });
+  });
+
+  tiles.sort((a, b) => a.layer - b.layer || a.row - b.row || a.col - b.col);
+  tiles.forEach((t, i) => t.id = i + 1);
+
+  const posToId = {};
+  tiles.forEach(t => { posToId[`${t.layer},${t.row},${t.col}`] = t.id; });
+  specialTiles.forEach(s => { s.id = posToId[`${s.layer},${s.row},${s.col}`] || 0; });
+
+  const json = {
+    levelId: 1,
+    totalPairs: Math.floor(tiles.length / 2),
+    tiles, specialTiles,
+    discs: state.discs.map(d => ({ id: d.id, gapLayer: d.gapLayer, row: d.row, col: d.col })),
+  };
+
+  const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'level_shape.json'; a.click();
+  URL.revokeObjectURL(url);
+  toast('已导出 level_shape.json', 'ok');
+}
+
+function importJSON(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = event => {
+    try {
+      loadFromEditorJSON(JSON.parse(event.target.result));
+      toast('导入成功', 'ok');
+    } catch (err) { toast('导入失败: ' + err.message, 'err'); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+function clearAll(btn) {
+  armConfirm(btn, '再次点击确认清空', () => {
+    clearAutosave();
+    past = []; future = [];
+    state.layers = [{ tiles: {} }, { tiles: {} }];
+    state.currentLayer = 0;
+    // 清空画布时也重置旋转配置,否则旋转中心/半径/方向还会留着,跟着关卡走
+    document.getElementById('rotCenterRow').value = -2;
+    document.getElementById('rotCenterCol').value = 0;
+    document.getElementById('rotRadius').value = 0;
+    state.sentRotation = null;
+    updateUI(); updateLegend(); draw(); updateUndoButtons();
+    toast('已清空', 'ok');
+  });
+}
+
+// ========== 生成关卡（依赖 generator.js 的 window.GEN） ==========
+// ============ Tab 切换 ============
+function switchTabTo(tab) {
+  document.getElementById('tab-params').classList.toggle('hidden', tab !== 'params');
+  document.getElementById('tab-difficulty').classList.toggle('hidden', tab !== 'difficulty');
+  document.getElementById('tabBtnParams').classList.toggle('active', tab === 'params');
+  document.getElementById('tabBtnDifficulty').classList.toggle('active', tab === 'difficulty');
+  genMode = tab;
+  // 切到难度模式时,把自动计算的值同步到滑轮,避免两个 Tab 显示不一致
+  if (tab === 'difficulty') {
+    const d = parseInt(document.getElementById('difficultyLevel').value);
+    const scoreMin = Math.round(44 + (d - 1) * 4);
+    const scoreMax = Math.round(60 + (d - 1) * 4);
+    const dark = Math.round(5 + (d - 1) * 1.7);
+    document.getElementById('scoreMin').value = scoreMin;
+    document.getElementById('scoreMax').value = scoreMax;
+    document.getElementById('darkRatio').value = dark;
+    onGenParamChange();
+  }
+}
+
+// ============ 难度模式 ============
+let genMode = 'params'; // 'params' | 'difficulty'
+
+function onDifficultyChange() {
+  const d = parseInt(document.getElementById('difficultyLevel').value);
+  document.getElementById('difficultyVal').textContent = d;
+  // 线性映射: 1→最简单, 10→最难(根据实测分数范围 60~150)
+  const scoreMin = Math.round(44 + (d - 1) * 4);   // 44~80
+  const scoreMax = Math.round(60 + (d - 1) * 4);   // 60~96
+  const dark = Math.round(5 + (d - 1) * 1.7);        // 5~20%
+  document.getElementById('autoScoreVal').textContent = scoreMin + '~' + scoreMax;
+  document.getElementById('autoDarkVal').textContent = dark + '%';
+}
+
+let genDarkCoverage = 1;   // 暗钩子覆盖率 0~1
+let genDarkRatio = 0.1;    // 暗牌总数比例 (0=无暗牌/无暗钩, 0.05~0.5)
+function syncSliderVal(id, v, suffix) { document.getElementById(id).textContent = v + (suffix || ''); }
+function onGenParamChange() {
+  genDarkCoverage = parseInt(document.getElementById('darkCoverage').value) / 100;
+  genDarkRatio = parseInt(document.getElementById('darkRatio').value) / 100;
+  syncSliderVal('darkCoverageVal', Math.round(genDarkCoverage * 100), '%');
+  syncSliderVal('darkRatioVal', Math.round(genDarkRatio * 100), '%');
+}
+function genDarkOptions() {
+  let darkRatio;
+  if (genMode === 'difficulty') {
+    const d = parseInt(document.getElementById('difficultyLevel').value);
+    darkRatio = Math.round(5 + (d - 1) * 1.7) / 100; // 5~20%
+  } else {
+    darkRatio = genDarkRatio;
+  }
+  return {
+    darkMode: true,
+    darkCoverage: genDarkCoverage,
+    darkRatio: darkRatio <= 0 ? undefined : darkRatio,
+  };
+}
+
+// 结构目标：钩子/暗钩%是埋深的自然结果，不再是可调硬目标 → 返回空 target（只按分数验收）
+function getStructTarget() {
+  return {};
+}
+// 计算关卡的钩子密度（钩子数/总对子数）
+function getHookDensity(d) {
+  if (!d.totalPairs) return 0;
+  return d.hooks / d.totalPairs;
+}
+function getDarkHookDensity(d) {
+  if (!d.totalPairs) return 0;
+  return d.darkHooks / d.totalPairs;
+}
+function matchStructTarget(d, t) {
+  // 钩子/暗钩%不设目标 → 命中只看分数(分数已含钩子深度)
+  return true;
+}
+// 生成结果 vs 目标的对比文字
+function structCompareText(d, t) {
+  const parts = [];
+  if (t.hooks != null) parts.push('钩' + Math.round(getHookDensity(d) * 100) + '%');
+  if (t.darkHooks != null) parts.push('暗' + Math.round(getDarkHookDensity(d) * 100) + '%');
+  return parts.join(' ');
+}
+// 状态行后缀：有内容才加 " · " 前缀（避免末尾孤立分隔符）
+function structSuffix(d, t) {
+  const s = structCompareText(d, t);
+  return s ? ' · ' + s : '';
+}
+const STRUCT_MAX_RETRY = 60;
+const STRUCT_MAX_RETRY_STACK = 100; // 堆塔模式重试更多次
+
+// 计算关卡与目标的偏差分（越小越匹配）
+function structMismatch(d, t) {
+  let mm = 0;
+  if (t.hooks != null) mm += Math.abs(getHookDensity(d) - t.hooks);
+  if (t.darkHooks != null) mm += Math.abs(getDarkHookDensity(d) - t.darkHooks);
+  return mm;
+}
+
+// 把生成参数挂到 level 上,后续渲染结果列表用得到
+function attachGenParams(level, mode, layerCount) {
+  const darkCov = Math.round(genDarkCoverage * 100);
+  const darkR = Math.round(genDarkRatio * 100);
+  level._genParams = {
+    darkCoverage: darkCov,        // 暗钩比例(%)
+    darkRatio: darkR,             // 暗牌总数比例(%)
+    mode: mode || 'shape',        // 形状/堆塔
+    layerCount: layerCount || 0,  // 堆层数(堆塔模式)
+  };
+  return level;
+}
+
+// 从编辑器 UI 读取旋转配置（始终返回，不允许关闭）
+function getRotationConfig() {
+  const centerRow = parseInt(document.getElementById('rotCenterRow').value);
+  const centerCol = parseInt(document.getElementById('rotCenterCol').value);
+  const radius = parseInt(document.getElementById('rotRadius').value);
+  const direction = state.rotationDir || 'clockwise';
+  if (isNaN(centerRow) || isNaN(centerCol) || isNaN(radius) || radius <= 0) return null;
+  return { centerRow, centerCol, radius, direction, trigger: 'onAnyClick' };
+}
+
+// 把 _genParams 渲染成短标签串(用于结果列表行内)
+// 前缀"参数"由 CSS ::before 加上,这里只输出值,更紧凑
+function genParamText(p) {
+  if (!p) return '';
+  return `暗${p.darkRatio}` + (p.mode === 'stack' ? ` · ${p.layerCount}层` : '');
+}
+
+function buildEditorShape() {
+  const tiles = [];
+  const specialTiles = [];
+  const spitters = [];
+  const queueTiles = [];
+  state.layers.forEach((layer, layerIdx) => {
+    Object.keys(layer.tiles).forEach(key => {
+      const tile = layer.tiles[key];
+      const [r, c] = key.split(',').map(Number);
+      // 保留 type 字段（spitter/dark 需要）和 dir/count（spitter 需要）
+      const tileEntry = { id: 0, layer: layerIdx, row: r, col: c, typeId: (tile.typeId != null ? tile.typeId : null) };
+      if (tile.type && tile.type !== 'normal') tileEntry.type = tile.type;
+      if (tile.type === 'spitter') {
+        tileEntry.dir = tile.dir || 'up';
+        tileEntry.count = tile.count || 3;
+      }
+      tiles.push(tileEntry);
+      if (tile.type === 'spitter') {
+        const dir = tile.dir || 'up';
+        // 注意：spitters 数组存 spitter 本体位置 (r, c)，不是 target 位置
+        // 之前错存 target 导致 generateStackFromShape 写出的 spitter tile 跑偏
+        spitters.push({
+          layer: layerIdx, row: r, col: c,
+          count: tile.count || 3, dir: dir,
+        });
+      }
+      if (tile.type !== 'normal') {
+        specialTiles.push({ id: 0, type: tile.type, layer: layerIdx, row: r, col: c, direction: tile.dir, count: tile.count });
+      }
+    });
+    // 吐牌机队列牌：生成器在填色时根据 spitter.count 自动生成（用户不画）
+    // 保留 layer.stacks 字段兼容旧代码,但不再展开为独立 tile
+    Object.keys(layer.stacks || {}).forEach(key => {
+      // 清空——队列牌现在由生成器自动生成
+      delete layer.stacks[key];
+    });
+  });
+  tiles.sort((a, b) => a.layer - b.layer || a.row - b.row || a.col - b.col);
+  const posToId = {};
+  tiles.forEach((t, i) => { t.id = i + 1; posToId[`${t.layer},${t.row},${t.col}`] = t.id; });
+  specialTiles.forEach(s => { s.id = posToId[`${s.layer},${s.row},${s.col}`] || 0; });
+  return { tiles, specialTiles, spitters, discs: state.discs.map(d => ({ id: d.id, gapLayer: d.gapLayer, row: d.row, col: d.col })) };
+}
+
+// ========== 版本检测：发现新版本时提示强刷 ==========
+window.APP_VERSION = 'v4.10.6.5'; // 部署时同步更新，与 version.json 一致
+let versionCheckTimer = null;
+let versionBannerShown = false;
+function checkNewVersion() {
+  if (versionBannerShown) return;
+  fetch('/version.json?t=' + Date.now()).then(r => r.json()).then(j => {
+    if (j && j.version && j.version !== window.APP_VERSION) {
+      showVersionBanner(j);
+    }
+  }).catch(_ => {});
+}
+function showVersionBanner(j) {
+  if (document.getElementById('versionBanner')) return;
+  versionBannerShown = true;
+  const b = document.createElement('div');
+  b.id = 'versionBanner';
+  b.className = 'version-banner';
+  const notes = j.notes ? '<div class="vb-notes">' + String(j.notes).replace(/\n/g,'<br>') + '</div>' : '';
+  b.innerHTML = '<div class="vb-head">🛠 工具已更新（新版本 ' + String(j.version).slice(0,7) + '）· 请 <b>强刷页面</b>（<code>Ctrl+Shift+R</code>）</div>' + notes +
+    '<div class="vb-actions"><button onclick="location.reload(true)" class="vb-btn vb-btn-primary">立即强刷</button>' +
+    '<button onclick="this.closest(\'#versionBanner\').remove()" class="vb-btn">稍后</button></div>';
+  document.body.appendChild(b);
+  clearInterval(versionCheckTimer);
+  versionCheckTimer = setInterval(checkNewVersion, 30000);
+}
+
+function setGenStatus(html) { document.getElementById('genStatus').innerHTML = html; }
+
+let currentLevel = null;
+let levelPlayHistory = []; // 当前关卡的试玩历史 [{durationMs, date}]
+
+function fmtTime(ms) {
+  if (ms == null) return '—';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm' + (s % 60) + 's';
+}
+function renderPlayHistory() {
+  const box = document.getElementById('playHistoryBox');
+  if (!box) return;
+  if (levelPlayHistory.length === 0) { box.innerHTML = ''; box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  const best = Math.min(...levelPlayHistory.map(h => h.durationMs));
+  box.innerHTML = '<div class="ph-title">试玩记录 · 最佳 <b>' + fmtTime(best) + '</b></div>' +
+    levelPlayHistory.slice(-5).map((h, i) =>
+      '<div class="ph-row"><span>#' + (levelPlayHistory.length - 5 + i + 1) + '</span><span>' + fmtTime(h.durationMs) + '</span></div>'
+    ).join('');
+}
+let previewFrameReady = false;
+let pendingLevel = null;
+let demoAvailable = true;
+let previewAckTimer = null;
+let previewTimerStart = 0;   // 试玩计时开始时间（ms），0 表示未在计时
+let previewTimerInterval = null;
+
+// 实时计时器：mm:ss 格式
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60).toString().padStart(2, '0') + ':' + (s % 60).toString().padStart(2, '0');
+}
+function startGame() {
+  if (!currentLevel) return; // 没有关卡时不启动计时
+  const overlay = document.getElementById('gameStartOverlay');
+  overlay.classList.add('hidden');
+  startPreviewTimer(); // 点击"计时并开始游戏"，启动计时
+}
+function showGameStartBtn() {
+  if (!demoAvailable) return;
+  const overlay = document.getElementById('gameStartOverlay');
+  overlay.classList.remove('hidden');
+}
+function startPreviewTimer() {
+  stopPreviewTimer();
+  previewTimerStart = Date.now();
+  const el = document.getElementById('previewTimer');
+  el.textContent = '⏱ 00:00';
+  el.classList.add('active');
+  previewTimerInterval = setInterval(() => {
+    el.textContent = '⏱ ' + fmtTime(Date.now() - previewTimerStart);
+  }, 1000);
+}
+function stopPreviewTimer() {
+  clearInterval(previewTimerInterval);
+  previewTimerInterval = null;
+  previewTimerStart = 0;
+  const el = document.getElementById('previewTimer');
+  if (el) {
+    el.textContent = '⏱ 00:00';
+    el.classList.remove('active');
+  }
+}
+
+// demo 位置：http 下由 serve_editor.js 的 /demo/ 路由提供；
+// file:// 直开时按仓库布局（工具包与 游戏Demo 同级）取相对路径
+function getDemoUrl() {
+  if (location.protocol === 'file:') return '../游戏Demo/game_demo_std.html';
+  return '/demo/index.html';
+}
+
+function showDemoMissing() {
+  demoAvailable = false;
+  document.getElementById('placeholderText').textContent = '未找到本地游戏 Demo';
+  document.getElementById('placeholderSub').innerHTML =
+    '把「游戏Demo」文件夹放在工具包旁边（或用它自带的 bat 启动）即可预览<br>生成、下载功能不受影响';
+}
+
+async function initPreview() {
+  const iframe = document.getElementById('previewFrame');
+  window.addEventListener('message', e => {
+    if (!e.data) return;
+    if (e.data.type === 'levelLoaded') {
+      clearTimeout(previewAckTimer);
+      setPreviewStats(currentLevel, e.data.darkCount);
+      enablePreviewActions(true);
+      stopPreviewTimer(); // 关卡（重新）载入，重置计时器
+      showGameStartBtn(); // 显示"计时并开始游戏"按钮，等玩家主动开始
+    } else if (e.data.type === 'gameStarted') {
+      // 保留兼容：demo 内部若触发 gameStarted，确保遮罩隐藏
+      document.getElementById('gameStartOverlay')?.classList.add('hidden');
+    } else if (e.data.type === 'playFinished') {
+      // 试玩通关：记录历史，最佳成绩用于保存
+      stopPreviewTimer();
+      if (currentLevel) {
+        levelPlayHistory.push({ durationMs: e.data.durationMs, date: Date.now() });
+        const best = Math.min(...levelPlayHistory.map(h => h.durationMs));
+        currentLevel.playTimeMs = best; // 保存时用最佳成绩
+        setGenStatus(`已通关 · 本局 ${fmtTime(e.data.durationMs)} · 最佳 ${fmtTime(best)} · 难度 ${currentLevel._difficulty?.score ?? '?'} 分`);
+        renderPlayHistory();
+      }
+    }
+  });
+  // http 模式先探测 demo 是否存在，避免 iframe 里挂 404
+  // 注意:预览本来就是巨型单文件(6.6MB),HEAD 也可能因超时/取消抛错(ERR_ABORTED),
+  // 那 ≠ 缺失——只有确认 404 才禁用预览;其余情况照常加载 iframe。
+  if (location.protocol !== 'file:') {
+    let is404 = false;
+    try {
+      const r = await fetch(getDemoUrl(), { method: 'HEAD' });
+      is404 = r.status === 404;
+    } catch (_) { is404 = false; }
+    if (is404) { showDemoMissing(); return; }
+  }
+  iframe.src = getDemoUrl();
+  iframe.addEventListener('load', () => {
+    previewFrameReady = true;
+    if (pendingLevel) sendLevelToPreview(pendingLevel);
+  });
+}
+
+// 当前目标分数范围(依据所处 tab)
+function currentScoreRange() {
+  if (genMode === 'difficulty') {
+    const d = parseInt(document.getElementById('difficultyLevel').value);
+    return { scoreLo: Math.round(44 + (d - 1) * 4), scoreHi: Math.round(60 + (d - 1) * 4) };
+  }
+  return {
+    scoreLo: parseInt(document.getElementById('scoreMin').value) || 0,
+    scoreHi: parseInt(document.getElementById('scoreMax').value) || 999,
+  };
+}
+// 目标分数 → 期望可点率(软目标,反向驱动:低分→好点,高分→难)(见 generator.desiredClickRatio)
+function desiredCR(scoreLo, scoreHi) {
+  return GEN.desiredClickRatio((scoreLo + scoreHi) / 2);
+}
+
+function generateCurrentShape() {
+  try {
+    const { tiles, specialTiles, discs } = buildEditorShape();
+    if (tiles.length < 4) { setGenStatus('<span class="bad">至少 4 张牌</span>'); return; }
+    // 总牌数偶数校验已移到 fillEditorShape 内部（含 spitter/队列牌的细粒度校验更准确）
+    const target = getStructTarget();
+    const { scoreLo, scoreHi } = currentScoreRange();
+    const dCR = desiredCR(scoreLo, scoreHi);
+    setGenStatus('生成中…');
+    enablePreviewActions(false);
+    let attempts = 0, best = null, bestMismatch = Infinity, lastErr = '';
+    let closest = null;
+    setTimeout(function tryGen() {
+      try {
+        const level = attachGenParams(GEN.fillEditorShape(tiles, specialTiles, Object.assign({ rotation: getRotationConfig(), discs }, genDarkOptions())), 'shape');
+        attempts++;
+        const score = level._difficulty.score;
+        const structHit = matchStructTarget(level._difficulty, target);
+        const scoreHit = score >= scoreLo && score <= scoreHi;
+        const mm = (structHit && scoreHit) ? structMismatch(level._difficulty, target) : Infinity;
+        if (mm < bestMismatch) { bestMismatch = mm; best = level; }
+        if (!closest) closest = level;
+        if ((structHit && scoreHit) || attempts >= STRUCT_MAX_RETRY) {
+          // 始终返回最接近的结果(命中或未命中都返回 best)
+          if (!best && closest) { best = closest; }
+          if (!best) {
+            setGenStatus(`<span class="bad">生成失败：${attempts} 次都没生成有效关卡${lastErr ? '（' + lastErr + '）' : '（当前形状无法完成填色）'}</span>`);
+            return;
+          }
+          addResult(best);
+          const d = best._difficulty;
+          const crPct = Math.round(d.clickRatio * 100);
+          const retryTxt = attempts > 1 ? '（重试' + attempts + '次）' : '';
+          if (structHit && scoreHit) {
+            setGenStatus(`<span class="good">✓ ${best.tiles.length}张 · ${d.score}分 · 可点${crPct}%${structSuffix(d, target)}${retryTxt}</span>`);
+          } else {
+            // 没命中:展示实际最佳值,客观说明与目标的差距
+            const parts = [];
+            const actualScore = d.score;
+            if (actualScore > scoreHi) parts.push(`分数 ${actualScore} 高于上限 ${scoreHi}`);
+            else if (actualScore < scoreLo) parts.push(`分数 ${actualScore} 低于下限 ${scoreLo}`);
+            setGenStatus(`<span class="warn">⚠ 重试 ${attempts} 次未严格命中，已展示最接近的关卡（${d.score}分 · 可点${crPct}%，目标≈${Math.round(dCR*100)}%）。偏差：${parts.join('；') || '微小差距'}</span>`);
+          }
+        } else {
+          if (attempts % 10 === 0) setGenStatus(`生成中… 已尝试 ${attempts}/${STRUCT_MAX_RETRY}`);
+          setTimeout(tryGen, 0);
+        }
+      } catch (e) {
+        const msg = e.message && e.message.includes('fill failed') ? '当前底座无法完成填色' : e.message;
+        lastErr = msg;
+        setGenStatus(`<span class="bad">生成失败: ${msg}</span>`);
+      }
+    }, 30);
+  } catch (e) { setGenStatus('<span class="bad">失败: ' + e.message + '</span>'); }
+}
+
+function generateStackFromCurrent() {
+  try {
+    const { tiles, specialTiles, spitters, discs } = buildEditorShape();
+    if (tiles.length < 4) { setGenStatus('<span class="bad">至少 4 张牌</span>'); return; }
+    const target = getStructTarget();
+    const { scoreLo, scoreHi } = currentScoreRange();
+    const scoreMid = (scoreLo + scoreHi) / 2;
+    const dCR = desiredCR(scoreLo, scoreHi);
+    // 目标分数 → 可点率 反向驱动:塔形密度(层数)自动跟随目标。
+    // 目标低 → 自动降层(塔更"开",可点率↑);目标高 → 自动升层(埋更多,可点率↓)。
+    // 从用户设定的层数起步,只有在该层无法打到目标范围时才往目标方向调。
+    let curLayer = Math.min(7, Math.max(2, parseInt(document.getElementById('stackCount').value) || 5));
+    let consistentHi = 0, consistentLo = 0; // 连续偏高/偏低的次数(drift 缓冲,避免单次抖动就换层)
+    setGenStatus('堆层生成中…');
+    enablePreviewActions(false);
+    let attempts = 0, best = null, bestMismatch = Infinity, lastErr = '';
+    let bestByDist = null, bestDist = Infinity; // 兜底:分数离目标最近的
+    let hintDir = null; // 记录本层偏低/偏高方向,用于状态提示
+    setTimeout(function tryGen() {
+      try {
+        const level = attachGenParams(
+          GEN.generateStackFromShape(tiles, Object.assign({ layerCount: curLayer, spitters, queueTiles: tiles.filter(t => t.spitterOrder != null), rotation: getRotationConfig(), discs }, genDarkOptions())),
+          'stack', curLayer
+        );
+        attempts++;
+        const score = level._difficulty.score;
+        const structHit = matchStructTarget(level._difficulty, target);
+        const scoreHit = score >= scoreLo && score <= scoreHi;
+        const mm = (structHit && scoreHit) ? structMismatch(level._difficulty, target) : Infinity;
+        if (mm < bestMismatch) { bestMismatch = mm; best = level; }
+        const dist = Math.abs(score - scoreMid);
+        if (dist < bestDist) { bestDist = dist; bestByDist = level; }
+        // ---- 可点率反向驱动:依目标分数调节层数 ----
+        if (!(structHit && scoreHit)) {
+          if (score > scoreHi) { consistentHi++; consistentLo = 0; hintDir = (curLayer < 7 ? '偏高' : null); }
+          else if (score < scoreLo) { consistentLo++; consistentHi = 0; hintDir = (curLayer > 2 ? '偏低' : null); }
+          if (consistentHi >= 3 && curLayer > 2) { curLayer--; consistentHi = 0; consistentLo = 0; }  // 分数过高→降层(可点率↑)
+          else if (consistentLo >= 3 && curLayer < 7) { curLayer++; consistentHi = 0; consistentLo = 0; } // 分数过低→升层(可点率↓)
+        }
+        if ((structHit && scoreHit) || attempts >= STRUCT_MAX_RETRY_STACK) {
+          // 未严格命中:兜底取"分数离目标最近"的关卡
+          if (!best && bestByDist) { best = bestByDist; }
+          addResult(best);
+          const d = best._difficulty;
+          const crPct = Math.round(d.clickRatio * 100);
+          const retryTxt = attempts > 1 ? '（重试' + attempts + '次）' : '';
+          if (structHit && scoreHit) {
+            setGenStatus(`<span class="good">✓ 堆塔 ${best.tiles.length}张 · ${d.score}分 · ${d.maxLayer + 1}层 · 可点${crPct}%（目标分数自动调层→控制可点率）${structSuffix(d, target)}${retryTxt}</span>`);
+          } else {
+            // 没命中:展示实际最佳值,客观说明与目标的差距
+            const parts = [];
+            const actualScore = d.score; // 用 best 的分数(最接近的)
+            if (actualScore > scoreHi) parts.push(`分数 ${actualScore} 高于上限 ${scoreHi}`);
+            else if (actualScore < scoreLo) parts.push(`分数 ${actualScore} 低于下限 ${scoreLo}`);
+            setGenStatus(`<span class="warn">⚠ 堆塔重试 ${attempts} 次未严格命中，已展示最接近的关卡（${d.score}分 · 可点${crPct}%，目标≈${Math.round(dCR*100)}%）${hintDir ? '（' + hintDir + '，已尝试调' + (hintDir === '偏高' ? '低' : '高') + '层数）' : ''}。偏差：${parts.join('；') || '微小差距'}</span>`);
+          }
+        } else {
+          if (attempts % 15 === 0) setGenStatus(`堆塔中… 已尝试 ${attempts}/${STRUCT_MAX_RETRY_STACK}（当前${curLayer}层）`);
+          setTimeout(tryGen, 0);
+        }
+      } catch (e) {
+        const msg = e.message && e.message.includes('fill failed') ? '当前底座无法完成填色' : e.message;
+        lastErr = msg;
+        setGenStatus(`<span class="bad">生成失败: ${msg}</span>`);
+      }
+    }, 30);
+  } catch (e) { setGenStatus('<span class="bad">失败: ' + e.message + '</span>'); }
+}
+
+function downloadCurrentLevel() {
+  if (!currentLevel) return;
+  const d = currentLevel._difficulty;
+  GEN.downloadJSON(currentLevel, `level_${Date.now()}_${d.score}.json`);
+}
+
+function showPreview() {
+  document.getElementById('previewPanel').classList.remove('collapsed');
+  document.getElementById('previewPanel').style.width = layoutW.preview + 'px';
+  document.getElementById('previewPlaceholder').classList.remove('hidden');
+  document.getElementById('previewEmptyHint').style.display = 'none';
+  updateStatsPending();
+}
+
+function closePreview() {
+  document.getElementById('previewPanel').classList.add('collapsed');
+  document.getElementById('previewPanel').style.width = '0px';
+  document.getElementById('previewEmptyHint').style.display = '';
+  currentLevel = null;
+  stopPreviewTimer(); // 关闭预览，停止并重置计时器
+  document.getElementById('gameStartOverlay')?.classList.add('hidden'); // 关闭预览，隐藏开始遮罩
+  const timerEl = document.getElementById('previewTimer');
+  if (timerEl) timerEl.textContent = '⏱ 00:00';
+  enablePreviewActions(false);
+  setGenStatus('就绪');
+}
+
+function sendLevelToPreview(level) {
+  if (!demoAvailable) {
+    toast('本地没有游戏 Demo，仅生成不预览（下载 JSON 不受影响）', 'err');
+    return;
+  }
+  const iframe = document.getElementById('previewFrame');
+  if (!previewFrameReady) {
+    pendingLevel = level;
+    return;
+  }
+  pendingLevel = null;
+  const clean = {
+    levelId: level.levelId,
+    totalPairs: level.totalPairs,
+    tiles: level.tiles,
+    specialTiles: level.specialTiles,
+    rotation: level.rotation || null, // 保留旋转配置
+    discs: level.discs || state.discs || [], // 圆盘(从 editor 状态直接带过去)
+  };
+  // 如果关卡带 rotation，编辑器自动切到旋转画笔并显示范围预警
+  if (clean.rotation) {
+    document.getElementById('rotCenterRow').value = clean.rotation.centerRow;
+    document.getElementById('rotCenterCol').value = clean.rotation.centerCol;
+    document.getElementById('rotRadius').value = clean.rotation.radius;
+    setRotationDir(clean.rotation.direction || 'clockwise');
+    setBrush('rotation');
+    // 记录"已发送的旋转配置"（用于 overlay 显示，与 demo 实际配置保持一致）
+    state.sentRotation = { ...clean.rotation };
+  } else {
+    state.sentRotation = null;
+  }
+  document.getElementById('previewPlaceholder').classList.add('hidden');
+  iframe.contentWindow.postMessage({ type: 'loadLevel', level: clean }, '*');
+  // file:// 直开时无法预检 demo，超时未收到回执则提示
+  clearTimeout(previewAckTimer);
+  previewAckTimer = setTimeout(() => {
+    if (location.protocol === 'file:') showDemoMissing();
+  }, 8000);
+}
+
+function updateStatsPending() {
+  document.getElementById('previewStats').innerHTML = '<span>生成中…</span>';
+}
+
+function setPreviewStats(level, darkCount) {
+  const d = level._difficulty;
+  const pct = d.total ? Math.round(d.clickable / d.total * 100) : 0;
+  document.getElementById('previewStats').innerHTML =
+    `<span>${level.tiles.length} 张</span>` +
+    `<span>${level.totalPairs} 对</span>` +
+    `<span class="good">${d.score} 分</span>` +
+    `<span title="暗牌数 / 暗钩子数">暗${darkCount ?? level.specialTiles.length}<sub>${d.darkHooks}钩</sub></span>` +
+    `<span title="即时难度：可点牌占比（越低越卡）">可点${pct}%</span>` +
+    `<span title="深埋对子数（钩子）">钩子${d.hooks}</span>` +
+    `<span title="最优打法下卡槽最大占用（越高容错越低）">槽${d.minSlots ?? '?'}/7</span>` +
+    `<span>${d.maxLayer + 1} 层</span>`;
+}
+
+function enablePreviewActions(enable) {
+  ['downloadBtn', 'closeBtn', 'wbToggleBtn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = !enable;
+  });
+}
+
+// ========== 保存到共享工作台（Netlify 部署版可用） ==========
+const WORKBENCH_API = '/levels';
+
+// 口令存 localStorage，与「📋 工作台」页跨标签共享（sessionStorage 是每个标签独立的，存不平）
+function getWbPass() { return localStorage.getItem('wbPass') || ''; }
+
+function workbenchApi(path, options) {
+  options = options || {};
+  const headers = options.headers || {};
+  const pass = getWbPass();
+  if (pass && !headers['X-Workbench-Pass']) {
+    headers['X-Workbench-Pass'] = pass;
+  }
+  return fetch(WORKBENCH_API + path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...headers },
+  }).then(async r => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    return data;
+  });
+}
+
+function setWorkbenchStatus(text, cls) {
+  const el = document.getElementById('workbenchStatus');
+  el.textContent = text;
+  el.className = 'wb-status ' + (cls || '');
+}
+
+function toggleWbSaveBox(show) {
+  const box = document.getElementById('wbSaveBox');
+  const showNow = show == null ? box.style.display === 'none' : show;
+  box.style.display = showNow ? 'block' : 'none';
+  if (showNow) {
+    document.getElementById('wbPass').value = getWbPass();
+    document.getElementById('wbSaveName').focus();
+  }
+}
+
+function saveCurrentLevelToWorkbench(btn) {
+  try {
+  if (!currentLevel) { alert('请先生成关卡（点上方生成按钮）才能保存'); toggleWbSaveBox(true); return; }
+  const pass = document.getElementById('wbPass').value.trim();
+  if (!pass) { alert('请输入共享口令（默认 1）'); toggleWbSaveBox(true); document.getElementById('wbPass').focus(); return; }
+  sessionStorage.setItem('wbPass', pass);
+  localStorage.setItem('wbPass', pass); // 跨标签共享给工作台页
+  const name = document.getElementById('wbSaveName').value.trim() || '未命名关卡';
+  const orderEl = document.getElementById('wbNewOrder') || document.getElementById('wbSaveOrder');
+  const orderVal = orderEl ? orderEl.value.trim() : '';
+  const order = orderVal === '' ? null : parseInt(orderVal, 10);
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  setWorkbenchStatus('保存中…', '');
+  workbenchApi('', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      tiles: currentLevel.tiles,
+      specialTiles: currentLevel.specialTiles,
+      discs: currentLevel.discs || state.discs || [], // 圆盘
+      totalPairs: currentLevel.totalPairs,
+      _difficulty: currentLevel._difficulty,
+      order,
+      playTimeMs: currentLevel.playTimeMs || null,  // 试玩耗时（通关后自动记录）
+    }),
+  }).then(data => {
+    btn.textContent = '已保存 ✓';
+    setWorkbenchStatus('保存成功：' + name + '（「📋 工作台」页可管理全部关卡）', 'connected');
+    toast('已保存到共享工作台：' + name, 'ok');
+    setTimeout(() => { btn.textContent = '保存'; btn.disabled = false; }, 2000);
+  }).catch(e => {
+    btn.textContent = '保存失败';
+    setWorkbenchStatus('保存失败: ' + e.message, 'error');
+    toast('保存失败: ' + e.message, 'err');
+    setTimeout(() => { btn.textContent = '保存'; btn.disabled = false; }, 2500);
+  });
+  } catch (e) {
+    alert('保存异常: ' + e.message);
+    btn.textContent = '保存';
+    btn.disabled = false;
+  }
+}
+
+// ========== 探测分数范围 ==========
+function probeScoreRange() {
+  let tiles, spitters;
+  try { ({ tiles, spitters } = buildEditorShape()); }
+  catch (e) { setGenStatus('<span class="bad">失败: ' + e.message + '</span>'); return; }
+  if (tiles.length < 4) { setGenStatus('<span class="bad">至少 4 张牌</span>'); return; }
+  // 扫描层数 2~7,找出本底座真正可达到的分数区间(而非单层的局部群聚)
+  const baseLayer = Math.min(7, Math.max(2, parseInt(document.getElementById('stackCount').value) || 5));
+  const LAYER_START = 2, LAYER_END = 7, PER_LAYER = 3;
+  const scores = [];
+  let layer = LAYER_START, k = 0;
+  let failCount = 0;
+  let lastError = '';
+  setGenStatus('探测分数范围… 层 2/7');
+  function step() {
+    if (layer > LAYER_END) {
+      if (scores.length === 0) {
+        const errHint = lastError ? '：' + lastError : '';
+        setGenStatus(`<span class="bad">探测失败：各层均未生成成功${errHint}（试试调整底座形状）</span>`);
+        return;
+      }
+      const min = Math.min(...scores.map(s => s.score)), max = Math.max(...scores.map(s => s.score));
+      const avg = Math.round(scores.reduce((a, b) => a + b.score, 0) / scores.length);
+      document.getElementById('scoreMin').value = min;
+      document.getElementById('scoreMax').value = max;
+      const extra = failCount > 0 ? `（${failCount} 次失败已跳过）` : '';
+      setGenStatus(`<span class="good">本底座可出：最低 ${min} / 最高 ${max} / 平均 ${avg}（层数 2~7 扫描）${extra}（已填入目标分数框，可再收窄）</span>`);
+      return;
+    }
+    try {
+      const level = GEN.generateStackFromShape(tiles, Object.assign({ layerCount: layer, spitters, queueTiles: tiles.filter(t => t.spitterOrder != null) }, genDarkOptions()));
+      scores.push({ score: level._difficulty.score, layer });
+    } catch (e) {
+      failCount++;
+      lastError = e.message;
+    }
+    k++;
+    if (k >= PER_LAYER) { k = 0; layer++; }
+    if (((layer - LAYER_START) * PER_LAYER + k) % 6 === 0) {
+      setGenStatus(`探测分数范围… 层 ${layer}/7` + (failCount > 0 ? `（${failCount} 次失败）` : ''));
+    }
+    setTimeout(step, 0);
+  }
+  step();
+}
+
+// ========== 批量生成（模式 = 当前形状 / 底座堆塔，分数范围过滤） ==========
+function batchGenerate() {
+  let tiles, specialTiles, spitters, discs;
+  try { ({ tiles, specialTiles, spitters, discs } = buildEditorShape()); }
+  catch (e) { setGenStatus('<span class="bad">失败: ' + e.message + '</span>'); return; }
+  if (tiles.length < 4) { setGenStatus('<span class="bad">至少 4 张牌</span>'); return; }
+
+  // 根据当前 tab 决定参数来源
+  let scoreMin, scoreMax;
+  if (genMode === 'difficulty') {
+    const d = parseInt(document.getElementById('difficultyLevel').value);
+    scoreMin = Math.round(44 + (d - 1) * 4);
+    scoreMax = Math.round(60 + (d - 1) * 4);
+  } else {
+    const lo = parseInt(document.getElementById('scoreMin').value);
+    const hi = parseInt(document.getElementById('scoreMax').value);
+    scoreMin = Number.isFinite(lo) ? lo : 0;
+    scoreMax = Number.isFinite(hi) ? hi : 999;
+  }
+  const target = getStructTarget();
+  const count = Math.min(50, Math.max(1, parseInt(document.getElementById('batchCount').value) || 5));
+  const startLayer = Math.min(7, Math.max(2, parseInt(document.getElementById('stackCount').value) || 5));
+  const mode = document.getElementById('batchMode').value;
+
+  const results = [];
+  let candidates = []; // 候选池:收集所有在分数范围内的关卡,按偏差排序
+  let attempts = 0;
+  const maxAttempts = count * 80 + 400;
+  // 可点率反向驱动:目标分数 → 自动调层数,让批次也能命中低/高目标
+  let curLayer = startLayer;
+  let consistentHi = 0, consistentLo = 0;
+
+  setGenStatus('批量生成中… 已就绪 0 / ' + count);
+  function step() {
+    attempts++;
+    if (results.length >= count) { finish(); return; }
+    if (attempts > maxAttempts) {
+      if (results.length === 0 && candidates.length > 0) {
+        // 没严格命中,但从候选池取最接近的
+        candidates.sort((a, b) => a._mm - b._mm);
+        results.push(...candidates.slice(0, count));
+        setGenStatus('批量生成中… 已就绪 ' + results.length + ' / ' + count + '（取最接近目标的）');
+      }
+      finish();
+      return;
+    }
+    try {
+      let level;
+      if (mode === 'shape') {
+        level = attachGenParams(GEN.fillEditorShape(tiles, specialTiles, Object.assign({ rotation: getRotationConfig(), discs }, genDarkOptions())), 'shape');
+      } else {
+        level = attachGenParams(
+          GEN.generateStackFromShape(tiles, Object.assign({ layerCount: curLayer, spitters, queueTiles: tiles.filter(t => t.spitterOrder != null), rotation: getRotationConfig(), discs }, genDarkOptions())),
+          'stack', curLayer
+        );
+      }
+      const s = level._difficulty.score;
+      // 依目标分数调节层数(与单关堆塔一致)
+      if (s > scoreMax) { consistentHi++; consistentLo = 0; }
+      else if (s < scoreMin) { consistentLo++; consistentHi = 0; }
+      else { consistentHi = 0; consistentLo = 0; }
+      if (consistentHi >= 3 && curLayer > 2) { curLayer--; consistentHi = 0; consistentLo = 0; }
+      else if (consistentLo >= 3 && curLayer < 7) { curLayer++; consistentHi = 0; consistentLo = 0; }
+      if (s >= scoreMin && s <= scoreMax) {
+        const mm = structMismatch(level._difficulty, target);
+        if (matchStructTarget(level._difficulty, target)) {
+          results.push(level);
+          // 每凑到一个就推一次状态(序列号清晰可见)
+          setGenStatus('批量生成中… 已就绪 <b>' + results.length + '</b> / ' + count + '（尝试 ' + attempts + ' 次）');
+        } else if (candidates.length < count * 3) {
+          // 保留候选(限制池大小避免内存膨胀)
+          level._mm = mm;
+          candidates.push(level);
+        }
+      }
+    } catch (_) { /* 跳过失败 */ }
+    setTimeout(step, 0);
+  }
+  function finish() {
+    results.forEach(lv => addResult(lv, { preview: false }));
+    const modeName = mode === 'shape' ? '按当前形状' : '按底座堆塔';
+    if (results.length === 0) {
+      // 0 关时给出具体提示
+      let hint = '试试调整目标分数范围';
+      if (scoreMax > 140) hint = '分数上限超过 140(理论最大值),建议调低 scoreMax';
+      setGenStatus(`<span class="bad">✗ 批量生成 0 关（${modeName} · ${scoreMin}~${scoreMax}分）→ ${hint}</span>`);
+      return;
+    }
+    const extra = (results.length < count && candidates.length > 0) ? '（部分取最接近目标的）' : '';
+    setGenStatus(`<span class="good">✓ 批量生成 ${results.length} 关（${modeName} · ${scoreMin}~${scoreMax}分${extra}）→ 已加入右侧列表</span>`);
+    if (results.length > 0) previewResult(0);
+  }
+  step();
+}
+
+// ========== 生成结果列表（常驻右侧面板，预览不关闭列表） ==========
+let resultsList = [];
+let activeResultIdx = -1;
+
+function addResult(level, opts) {
+  opts = opts || {};
+  resultsList.push(level);
+  activeResultIdx = resultsList.length - 1;
+  document.getElementById('resultsSection').style.display = 'flex';
+  renderResults();
+  if (opts.preview !== false) {
+    currentLevel = level;
+    levelPlayHistory = []; // 新关卡，重置试玩历史
+    renderPlayHistory();
+    showPreview();
+    sendLevelToPreview(level);
+  }
+}
+
+function renderResults() {
+  const el = document.getElementById('resultsList');
+  document.getElementById('resultCount').textContent = resultsList.length;
+  el.innerHTML = resultsList.map((lv, i) => {
+    const d = lv._difficulty || {};
+    const active = i === activeResultIdx ? ' active' : '';
+    const paramChip = lv._genParams
+      ? `<span class="ri-params" title="生成时所用的参数(预期值)">${genParamText(lv._genParams)}</span>`
+      : '';
+    // 行 1: #idx / 分数 / 元信息 / actions
+    // 行 2: 参数 chip(预期) / 钩子密度(实际,右对齐)
+    return `<div class="result-item${active}" onclick="previewResult(${i})">
+      <span class="ri-idx">#${i + 1}</span>
+      <span class="ri-score">${d.score ?? '?'}分</span>
+      <span class="ri-meta">${lv.tiles.length}张/${lv.totalPairs}对 · ${(d.maxLayer ?? 0) + 1}层</span>
+      <span class="ri-actions" onclick="event.stopPropagation()">
+        <button class="primary" onclick="previewResult(${i})">预览</button>
+        <button onclick="downloadResult(${i})">下载</button>
+      </span>
+      ${paramChip}
+      <span class="ri-hooks" title="钩子=(锁定对/总对子)，均深=平均每对钩子的埋深(越大越深越难)。深层塔钩%高但均深才区分难度 · 可点比 · 槽位压力">钩${d.totalPairs ? Math.round(d.hooks / d.totalPairs * 100) : '?'}%/${d.totalPairs ? Math.round(d.darkHooks / d.totalPairs * 100) : '?'}%·均深${(d.totalPairs && d.hooks) ? (d.effHooks / d.hooks).toFixed(1) : '—'} · 可点${d.total ? Math.round(d.clickable / d.total * 100) : '-'}% · 槽${d.minSlots ?? '?'}/7${d.minSlots >= 5 ? ' 🔥' : ''}</span>
+    </div>`;
+  }).join('');
+}
+
+function previewResult(i) {
+  const lv = resultsList[i];
+  if (!lv) return;
+  activeResultIdx = i;
+  currentLevel = lv;
+  renderResults();
+  showPreview();
+  sendLevelToPreview(lv);
+  setGenStatus('已加载 #' + (i + 1) + '（' + (lv._difficulty?.score ?? '?') + '分）');
+}
+
+function downloadResult(i) {
+  const lv = resultsList[i];
+  if (!lv) return;
+  GEN.downloadJSON(lv, `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`);
+}
+
+function downloadAllResults() {
+  resultsList.forEach((lv, i) => {
+    setTimeout(() => GEN.downloadJSON(lv, `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`), i * 300);
+  });
+}
+
+function clearResults() {
+  resultsList = [];
+  activeResultIdx = -1;
+  renderResults();
+  document.getElementById('resultsSection').style.display = 'none';
+}
+
+</script>
+<script src="lib/level-document.js"></script>
+<script src="lib/validation.js"></script>
+<script src="lib/auto-assign.js"></script>
+<script src="lib/daily-editor-patch.js"></script>
+<script>
+dailyEditorBootstrap();
+// 启动版本检测：每 5 分钟检查一次是否有新版本部署
+setTimeout(checkNewVersion, 30000);
+versionCheckTimer = setInterval(checkNewVersion, 300000);
+</script>
+</body>
+</html>
