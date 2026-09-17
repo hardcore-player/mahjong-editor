@@ -1,3 +1,5 @@
 .wrangler/
 .DS_Store
 .claude/
+daily-editor/screenshots-bugfix/
+daily-editor/screenshots-static-prod/

@@ -1475,6 +1475,11 @@ const GRID_ROWS = 16;  // 画布行数（牌区高：16 子格 = 8 麻将位）
 const CELL = 40;       // 每格世界像素（缩放前）
 const TILE = 2;        // 每张牌占 2×2 格
 const BOARD_PAD = 6;   // 棋盘四周留白（世界像素）
+// std 坐标显示偏移（内部 col+5 / row+8 → 画布格）
+const DISPLAY_OFFSET_COL = 5;
+const DISPLAY_OFFSET_ROW = 8;
+// 非当前编辑层的装饰性深度偏移上限（当前编辑层始终 0，保证落牌/指示框/命中一致）
+const MAX_LAYER_VISUAL_PX = 12;
 
 // 每层颜色（俯视平铺色块，浅色底适配）
 const LAYER_COLORS = [
@@ -1526,6 +1531,67 @@ const canvasWrap = document.getElementById('canvasWrap');
 function worldTopPad() {
   const maxLayer = Math.max(state.layers.length - 1, 0);
   return maxLayer * CELL * 0.2 + 10;
+}
+
+/** 当前编辑层 dx/dy=0；其他层仅作视觉区分，偏移有上限 */
+function getLayerVisualOffset(layerIdx, editLayerIdx) {
+  if (layerIdx === editLayerIdx) return { dx: 0, dy: 0 };
+  const depth = Math.min(Math.abs(layerIdx - editLayerIdx), 4);
+  const shift = Math.min(depth * 3, MAX_LAYER_VISUAL_PX);
+  return { dx: -shift, dy: -shift };
+}
+
+/** 逻辑格 → 世界像素矩形（与 drawTile / drawHover 同源） */
+function cellToScreen(row, col, layerIdx, editLayerIdx) {
+  const dCol = col + DISPLAY_OFFSET_COL;
+  const dRow = row + DISPLAY_OFFSET_ROW;
+  const { dx, dy } = getLayerVisualOffset(layerIdx, editLayerIdx ?? state.currentLayer);
+  return {
+    x: BOARD_PAD + dCol * CELL + dx,
+    y: BOARD_PAD + worldTopPad() + dRow * CELL + dy,
+    w: TILE * CELL,
+    h: TILE * CELL,
+  };
+}
+
+/** 屏幕 CSS 像素 → 半格放置坐标（row/col 步长 1，不吸附 2×2 锚点） */
+function screenToGridCell(px, py) {
+  const wx = (px - view.ox) / view.scale;
+  const wy = (py - view.oy) / view.scale;
+  const bx = BOARD_PAD;
+  const by = worldTopPad() + BOARD_PAD;
+  const eps = 1e-6;
+  return {
+    col: Math.floor((wx - bx) / CELL + eps) - DISPLAY_OFFSET_COL,
+    row: Math.floor((wy - by) / CELL + eps) - DISPLAY_OFFSET_ROW,
+  };
+}
+
+/** 查找覆盖某子格的 2×2 麻将（仅命中已有牌，不改变放置坐标） */
+function findTileCoveringCell(row, col, layerIdx) {
+  const layer = state.layers[layerIdx];
+  if (!layer?.tiles) return null;
+  const sub = `${row},${col}`;
+  let hitKey = null;
+  for (const key of Object.keys(layer.tiles)) {
+    if (tileOccupiesCells(key).has(sub)) hitKey = key;
+  }
+  if (!hitKey) return null;
+  const [tr, tc] = hitKey.split(',').map(Number);
+  return { layer: layerIdx, key: hitKey, row: tr, col: tc, tile: layer.tiles[hitKey] };
+}
+
+function findTopTileCoveringCell(row, col) {
+  for (let l = state.layers.length - 1; l >= 0; l--) {
+    const hit = findTileCoveringCell(row, col, l);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** @deprecated 使用 screenToGridCell */
+function screenToCell(px, py) {
+  return screenToGridCell(px, py);
 }
 
 function resizeCanvas() {
@@ -1618,19 +1684,7 @@ function mirrorCol(col, layer) {
 }
 
 function pixelToCell(px, py) {
-  // CSS 像素 → 世界坐标 → 编辑器坐标
-  const wx = (px - view.ox) / view.scale;
-  const wy = (py - view.oy) / view.scale;
-  const bx = BOARD_PAD, by = worldTopPad() + BOARD_PAD;
-  // 圆盘画笔跟普通画笔一样:floor 取整数 cell(1 cell 单位 snap,像摆麻将)
-  // drawDiscAt 渲染时用 +CELL/2 偏移 → 圆心落在 cell 中心
-  //   col=N → cx = BOARD_PAD + (N+OFFSET_COL)*CELL + CELL/2
-  //   click 在 cell N 区域 → col = N → 圆心在 cell N center ✓
-  const eps = 1e-6;
-  return {
-    col: Math.floor((wx - bx) / CELL + eps) - DISPLAY_OFFSET_COL,
-    row: Math.floor((wy - by) / CELL + eps) - DISPLAY_OFFSET_ROW,
-  };
+  return screenToGridCell(px, py);
 }
 
 // ========== 历史（撤销/重做） ==========
@@ -2098,12 +2152,11 @@ function drawRotationOverlay() {
 
 // 俯视模式：牌大小不变，每层往上偏移露出下层
 function drawTile(col, row, layerIdx, tile, isCurrent, isHover, isIssue) {
-  const dCol = col + DISPLAY_OFFSET_COL;
-  const dRow = row + DISPLAY_OFFSET_ROW;
-  // 上层牌每升一层往左偏 3px、往上偏 3px，从侧面能看到错开的层级
-  const x = BOARD_PAD + dCol * CELL - layerIdx * 3;
-  const y = BOARD_PAD + worldTopPad() + dRow * CELL - layerIdx * 3;
-  const w = TILE * CELL, h = TILE * CELL;
+  const rect = cellToScreen(row, col, layerIdx, state.currentLayer);
+  const x = rect.x;
+  const y = rect.y;
+  const w = rect.w;
+  const h = rect.h;
   const pad = 2;
   const lw = 1 / view.scale;
 
@@ -2211,11 +2264,11 @@ function drawHover() {
   const key = `${row},${col}`;
   const hasTile = key in layer.tiles;
 
-  const dCol = col + DISPLAY_OFFSET_COL;
-  const dRow = row + DISPLAY_OFFSET_ROW;
-  const x = BOARD_PAD + dCol * CELL;
-  const y = BOARD_PAD + worldTopPad() + dRow * CELL - state.currentLayer * CELL * 0.2;
-  const w = TILE * CELL, h = TILE * CELL;
+  const rect = cellToScreen(row, col, state.currentLayer, state.currentLayer);
+  const x = rect.x;
+  const y = rect.y;
+  const w = rect.w;
+  const h = rect.h;
 
   const color = hasTile ? '#c97b1f' : (valid ? '#b8860b' : '#c0453e');
   ctx.strokeStyle = color;
@@ -2363,12 +2416,12 @@ canvas.addEventListener('mousedown', e => {
   state.strokeSnapshot = serializeState(); // 笔画前快照，mouseup 时入历史
   const layer = state.layers[state.currentLayer];
   const { col, row } = state.hoverCell;
-  const key = `${row},${col}`;
 
   if (e.button === 2) {
     state.paintMode = 'remove'; // 右键一律擦除
   } else {
-    const existing = layer.tiles[key];
+    const cover = findTileCoveringCell(row, col, state.currentLayer);
+    const existing = cover?.tile;
     // 重复点击同一位置：吐牌机总是可删除；其他画笔需类型匹配才删除
     if (existing && (state.brush === 'spitter' ? existing.type === 'spitter' : existing.type === state.brush)) {
       state.paintMode = 'remove';
@@ -2401,16 +2454,8 @@ canvas.addEventListener('mousemove', e => {
   } else {
     const valid = hasSupportAt(cell.col, cell.row);
     state.hoverCell = { col: cell.col, row: cell.row, valid };
-    // 找到当前鼠标位置最顶层的牌
-    let topTile = null;
-    for (let l = state.layers.length - 1; l >= 0; l--) {
-      const layer = state.layers[l];
-      if (layer.tiles[`${cell.row},${cell.col}`]) {
-        topTile = { key: `${cell.row},${cell.col}`, layer: l };
-        break;
-      }
-    }
-    state.hoverTile = topTile;
+    const cover = findTopTileCoveringCell(cell.row, cell.col);
+    state.hoverTile = cover ? { key: cover.key, layer: cover.layer } : null;
   }
 
   if (state.painting) {
@@ -2934,9 +2979,7 @@ function updateLegend() {
 
 // ========== 坐标系统（std 版） ==========
 // std：JSON 的 row=纵向、col=横向，与内部一致，【不再交换】。
-// 画布显示：内部 col(横向) + 5 → 显示 0..10；内部 row(纵向) + 8 → 显示 0..14
-const DISPLAY_OFFSET_COL = 5;  // 内部横向偏移
-const DISPLAY_OFFSET_ROW = 8;  // 内部纵向偏移
+// DISPLAY_OFFSET_* 已移至顶部常量区，与 cellToScreen / screenToCell 共用
 
 // 导入：std JSON 的 (row纵, col横) 与内部一致，直接读入
 function loadFromEditorJSON(json) {

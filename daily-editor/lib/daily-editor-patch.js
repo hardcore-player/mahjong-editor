@@ -44,6 +44,9 @@
         lastError: null,
     };
 
+    let typeAssignPast = [];
+    let typeAssignFuture = [];
+
     const orig = {
         loadFromEditorJSON: typeof loadFromEditorJSON === 'function' ? loadFromEditorJSON : null,
         exportJSON: typeof exportJSON === 'function' ? exportJSON : null,
@@ -255,65 +258,170 @@
         scheduleAutosave();
     }
 
-    function applySolvableResultToDoc(result) {
-        for (const t of levelDoc.addedTiles) {
-            if (result.assignedById[t.id] != null) t.typeId = result.assignedById[t.id];
-        }
-        for (const [id, patch] of levelDoc.editedById.entries()) {
-            if (result.assignedById[id] != null) {
-                levelDoc.editedById.set(id, { ...patch, typeId: result.assignedById[id] });
-            }
-        }
-        for (const t of levelDoc.raw.tiles ?? []) {
-            if (!LevelDocument.isDailyTile(t) || levelDoc.deletedIds.has(t.id)) continue;
-            if (result.assignedById[t.id] != null && !levelDoc.editedById.has(t.id)) {
-                levelDoc.editedById.set(t.id, {
-                    layer: t.layer,
-                    row: t.row,
-                    col: t.col,
-                    typeId: result.assignedById[t.id],
-                    isDark: !!t.isDark,
+    function captureGeometrySignature() {
+        const tiles = [];
+        state.layers.forEach((layer, layerIdx) => {
+            Object.entries(layer?.tiles || {}).forEach(([key, cell]) => {
+                const [row, col] = key.split(',').map(Number);
+                tiles.push({
+                    id: cell._docId ?? null,
+                    layer: layerIdx,
+                    row,
+                    col,
+                    isDark: cell.type === 'dark',
                 });
-            }
+            });
+        });
+        tiles.sort(
+            (a, b) =>
+                a.layer - b.layer
+                || a.row - b.row
+                || a.col - b.col
+                || (a.id ?? 0) - (b.id ?? 0),
+        );
+        return JSON.stringify(tiles);
+    }
+
+    function countBoardTiles() {
+        let n = 0;
+        state.layers.forEach((layer) => {
+            n += Object.keys(layer?.tiles || {}).length;
+        });
+        return n;
+    }
+
+    function captureTypeIdMap() {
+        const map = {};
+        state.layers.forEach((layer) => {
+            Object.values(layer?.tiles || {}).forEach((cell) => {
+                if (cell?._docId != null) map[cell._docId] = cell.typeId ?? null;
+            });
+        });
+        return map;
+    }
+
+    function applyTypeIdMap(map) {
+        state.layers.forEach((layer) => {
+            Object.values(layer?.tiles || {}).forEach((cell) => {
+                if (cell?._docId != null && Object.prototype.hasOwnProperty.call(map, cell._docId)) {
+                    cell.typeId = map[cell._docId];
+                }
+            });
+        });
+        if (levelDoc) levelDoc.applyTypeIdsOnly(map);
+    }
+
+    function syncDocIdsToLayers() {
+        if (!levelDoc) return;
+        for (const t of levelDoc.addedTiles) {
+            const key = `${t.row},${t.col}`;
+            const cell = state.layers[t.layer]?.tiles?.[key];
+            if (cell) cell._docId = t.id;
         }
-        levelDoc.markDirty();
-        state.layers = levelDoc.buildEditableLayers();
+        for (const [id, patch] of levelDoc.editedById) {
+            const key = `${patch.row},${patch.col}`;
+            const cell = state.layers[patch.layer]?.tiles?.[key];
+            if (cell) cell._docId = id;
+        }
+    }
+
+    function applyTypeIdsToLayersOnly(assignmentById) {
+        state.layers.forEach((layer) => {
+            Object.values(layer?.tiles || {}).forEach((cell) => {
+                if (cell?._docId != null && assignmentById[cell._docId] != null) {
+                    cell.typeId = assignmentById[cell._docId];
+                }
+            });
+        });
+    }
+
+    function pushTypeAssignUndo(beforeMap) {
+        typeAssignPast.push(beforeMap);
+        if (typeAssignPast.length > 100) typeAssignPast.shift();
+        typeAssignFuture = [];
+        updateUndoButtons();
+    }
+
+    function undoTypeAssign() {
+        if (!typeAssignPast.length) return false;
+        typeAssignFuture.push(captureTypeIdMap());
+        applyTypeIdMap(typeAssignPast.pop());
+        return true;
+    }
+
+    function redoTypeAssign() {
+        if (!typeAssignFuture.length) return false;
+        typeAssignPast.push(captureTypeIdMap());
+        applyTypeIdMap(typeAssignFuture.pop());
+        return true;
     }
 
     function runGenerateSolvable() {
         if (!levelDoc || typeof DailySolvableFill === 'undefined') return;
-        const before = serializeState();
-        levelDoc.mergeEditableFromLayers(state.layers);
 
-        let json;
+        const fullSnapshot = serializeState();
+        const geoBefore = captureGeometrySignature();
+        const tileCountBefore = countBoardTiles();
+        const typeBefore = captureTypeIdMap();
+        const savedLayer = state.currentLayer;
+
         try {
-            json = levelDoc.exportJson();
+            levelDoc.mergeEditableFromLayers(state.layers);
+            syncDocIdsToLayers();
+
+            let json;
+            try {
+                json = levelDoc.exportJson();
+            } catch (e) {
+                throw new Error(e.message || String(e));
+            }
+
+            const result = DailySolvableFill.planTypeAssignments(json.tiles);
+            if (!result.ok) {
+                restoreState(fullSnapshot);
+                toast(result.error || '生成失败', 'err');
+                resetSolvableState({ status: SOLVABLE_STATUS.FAILED, lastError: result.error });
+                draw();
+                return;
+            }
+
+            applyTypeIdsToLayersOnly(result.assignedById);
+            levelDoc.applyTypeIdsOnly(result.assignedById);
+
+            if (typeof window.__generateTestHook === 'function') {
+                window.__generateTestHook();
+            }
+
+            const geoAfter = captureGeometrySignature();
+            const tileCountAfter = countBoardTiles();
+
+            if (geoBefore !== geoAfter || tileCountBefore !== tileCountAfter) {
+                restoreState(fullSnapshot);
+                toast('花色生成失败，布局已恢复', 'err');
+                resetSolvableState({ status: SOLVABLE_STATUS.FAILED, lastError: '布局签名不一致' });
+                draw();
+                return;
+            }
+
+            state.currentLayer = savedLayer;
+            solvableState = {
+                status: SOLVABLE_STATUS.VERIFIED,
+                layoutFingerprint: result.layoutFingerprint || DailySolvableFill.computeLayoutFingerprint(json),
+                solution: result.solution,
+                seed: result.seed,
+                lastError: null,
+            };
+            pushTypeAssignUndo(typeBefore);
+            updateSolvableStatusUI();
+            updateStatsPanel();
+            draw();
+            toast(`已生成并验证可解花色（${result.solution.length} 步）`, 'ok');
         } catch (e) {
-            toast('生成失败：' + e.message, 'err');
-            resetSolvableState({ status: SOLVABLE_STATUS.FAILED, lastError: e.message });
-            return;
+            restoreState(fullSnapshot);
+            toast('花色生成失败，布局已恢复', 'err');
+            resetSolvableState({ status: SOLVABLE_STATUS.FAILED, lastError: String(e.message || e) });
+            draw();
         }
-
-        const result = DailySolvableFill.generateSolvableTypeIds(json);
-        if (!result.ok) {
-            toast(result.error || '生成失败', 'err');
-            resetSolvableState({ status: SOLVABLE_STATUS.FAILED, lastError: result.error });
-            return;
-        }
-
-        applySolvableResultToDoc(result);
-        solvableState = {
-            status: SOLVABLE_STATUS.VERIFIED,
-            layoutFingerprint: result.layoutFingerprint,
-            solution: result.solution,
-            seed: result.seed,
-            lastError: null,
-        };
-        pushHistory(before);
-        updateSolvableStatusUI();
-        updateStatsPanel();
-        draw();
-        toast(`已生成并验证可解花色（${result.solution.length} 步）`, 'ok');
     }
 
     function verifyImportedSolvable(json) {
@@ -599,12 +707,11 @@
     function drawTileFaces(col, row, layerIdx, tile) {
         if (!tile || tile.type === 'spitter' || tile.type === 'spitterQueue') return;
 
-        const dCol = col + DISPLAY_OFFSET_COL;
-        const dRow = row + DISPLAY_OFFSET_ROW;
-        const x = BOARD_PAD + dCol * CELL - layerIdx * 3;
-        const y = BOARD_PAD + worldTopPad() + dRow * CELL - layerIdx * 3;
-        const w = TILE * CELL;
-        const h = TILE * CELL;
+        const rect = cellToScreen(row, col, layerIdx, state.currentLayer);
+        const x = rect.x;
+        const y = rect.y;
+        const w = rect.w;
+        const h = rect.h;
         const pad = 2;
         const innerX = x + pad + CELL * 0.15;
         const innerY = y + pad + CELL * 0.15;
@@ -693,8 +800,14 @@
         const mkey = `${row},${mcol}`;
 
         if (state.brush === 'eraser' || state.paintMode === 'remove') {
-            delete layer.tiles[key];
-            if (state.symmetric && mcol !== col) delete layer.tiles[mkey];
+            const hit = findTileCoveringCell(row, col, state.currentLayer);
+            if (hit) {
+                delete layer.tiles[hit.key];
+                if (state.symmetric) {
+                    const mc = mirrorCol(hit.col, state.currentLayer);
+                    if (mc !== hit.col) delete layer.tiles[`${hit.row},${mc}`];
+                }
+            }
             draw();
             updateUI();
             afterLayoutEdit();
@@ -772,10 +885,26 @@
         afterLayoutEdit();
     };
 
+    const origUpdateUndoButtons = typeof updateUndoButtons === 'function' ? updateUndoButtons : null;
+    window.updateUndoButtons = function () {
+        if (origUpdateUndoButtons) origUpdateUndoButtons.call(this);
+        const undoBtn = document.getElementById('undoBtn');
+        const redoBtn = document.getElementById('redoBtn');
+        if (undoBtn && typeAssignPast.length > 0) undoBtn.disabled = false;
+        if (redoBtn && typeAssignFuture.length > 0) redoBtn.disabled = false;
+    };
+
     const origUndo = typeof undo === 'function' ? undo : null;
     const origRedo = typeof redo === 'function' ? redo : null;
 
     window.undo = function () {
+        if (undoTypeAssign()) {
+            markLayoutStaleIfNeeded();
+            updateStatsPanel();
+            scheduleAutosave();
+            draw();
+            return;
+        }
         if (origUndo) origUndo();
         markLayoutStaleIfNeeded();
         updateStatsPanel();
@@ -783,6 +912,13 @@
     };
 
     window.redo = function () {
+        if (redoTypeAssign()) {
+            markLayoutStaleIfNeeded();
+            updateStatsPanel();
+            scheduleAutosave();
+            draw();
+            return;
+        }
         if (origRedo) origRedo();
         markLayoutStaleIfNeeded();
         updateStatsPanel();
@@ -841,5 +977,71 @@
     window.__toggleDevDebug = () => {
         const toggle = document.getElementById('dailyDevDebugToggle');
         if (toggle) toggle.click();
+    };
+    window.__captureGeometrySignature = () => captureGeometrySignature();
+    window.__captureTypeIdMap = () => captureTypeIdMap();
+    window.__countBoardTiles = () => countBoardTiles();
+    window.__getTileScreenCenter = (row, col, layerIdx) => {
+        const r = cellToScreen(row, col, layerIdx, state.currentLayer);
+        return {
+            wx: r.x + r.w / 2,
+            wy: r.y + r.h / 2,
+            row,
+            col,
+            layer: layerIdx,
+        };
+    };
+    window.__worldToScreen = (wx, wy) => ({ x: wx * view.scale + view.ox, y: wy * view.scale + view.oy });
+    window.__getHoverScreenCenter = () => {
+        if (!state.hoverCell) return null;
+        const r = cellToScreen(state.hoverCell.row, state.hoverCell.col, state.currentLayer, state.currentLayer);
+        return { wx: r.x + r.w / 2, wy: r.y + r.h / 2 };
+    };
+    window.__screenToCell = (px, py) => screenToGridCell(px, py);
+    window.__screenToGridCell = (px, py) => screenToGridCell(px, py);
+    window.__findTileCoveringCell = (row, col, layerIdx) => findTileCoveringCell(row, col, layerIdx);
+    window.__getGridCellScreenPoint = (row, col, layerIdx) => {
+        const r = cellToScreen(row, col, layerIdx, state.currentLayer);
+        return { wx: r.x + CELL / 2, wy: r.y + CELL / 2, row, col, layer: layerIdx };
+    };
+    window.__setView = (scale, ox, oy) => {
+        if (scale != null) view.scale = scale;
+        if (ox != null) view.ox = ox;
+        if (oy != null) view.oy = oy;
+        draw();
+    };
+    window.__fitView = () => fitView();
+    window.__setCurrentLayer = (n) => {
+        state.currentLayer = Math.max(0, Math.min(n, state.layers.length - 1));
+        updateUI();
+        draw();
+    };
+    window.__ensureLayers = (count) => {
+        while (state.layers.length < count + 1) addLayer();
+    };
+    window.__setShowAll = (v) => {
+        state.showAll = !!v;
+        const chip = document.getElementById('allToggle');
+        if (chip) chip.classList.toggle('active', state.showAll);
+        draw();
+    };
+    window.__setGenerateTestHook = (fn) => {
+        window.__generateTestHook = typeof fn === 'function' ? fn : null;
+    };
+    window.__getTileKeyAt = (layerIdx, row, col) => {
+        const key = `${row},${col}`;
+        return state.layers[layerIdx]?.tiles?.[key] ? key : null;
+    };
+    window.__getView = () => ({ scale: view.scale, ox: view.ox, oy: view.oy });
+    window.__centerViewOnCell = (row, col, layerIdx, scale) => {
+        const rect = cellToScreen(row, col, layerIdx, layerIdx);
+        const cx = rect.x + rect.w / 2;
+        const cy = rect.y + rect.h / 2;
+        const w = canvasWrap.clientWidth;
+        const h = canvasWrap.clientHeight;
+        view.scale = scale != null ? scale : view.scale;
+        view.ox = w / 2 - cx * view.scale;
+        view.oy = h / 2 - cy * view.scale;
+        draw();
     };
 })();

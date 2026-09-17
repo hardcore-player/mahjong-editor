@@ -72,15 +72,17 @@ function ping() {
 
 
 
+    const { resolvePlaywrightModule, launchChromeBrowser } = require('./lib/playwright-chrome-launch.cjs');
+
     let playwright;
 
     try {
 
-        playwright = require(path.join(__dirname, '../../mj-client/node_modules/playwright'));
+        ({ mod: playwright } = resolvePlaywrightModule());
 
-    } catch (_) {
+    } catch (e) {
 
-        console.error('缺少 Playwright，请在 mj-client 安装');
+        console.error(e.message);
 
         process.exitCode = 1;
 
@@ -94,7 +96,7 @@ function ping() {
 
 
 
-    const browser = await playwright.chromium.launch({ headless: true });
+    const { browser } = await launchChromeBrowser(playwright, { headless: true });
 
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 

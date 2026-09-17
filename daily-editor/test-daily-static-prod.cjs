@@ -6,10 +6,12 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { resolvePlaywrightModule, launchChromeBrowser } = require('./lib/playwright-chrome-launch.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = 9010;
 const CLOUDFLARE_URL = process.env.CLOUDFLARE_URL || '';
+const SHOTS = path.join(__dirname, 'screenshots-static-prod');
 
 const MIME = {
     '.html': 'text/html; charset=utf-8',
@@ -113,25 +115,38 @@ async function checkAssets(base, label) {
 async function runPlaywrightSolvableWorkflow(base, label) {
     let passed = 0;
     let failed = 0;
-    const ok = (c, m) => (c ? (passed++, console.log(`  OK  [${label}] ${m}`)) : (failed++, console.error(`  FAIL  [${label}] ${m}`)));
+    let failShotIdx = 0;
+    fs.mkdirSync(SHOTS, { recursive: true });
 
-    let playwright;
-    try {
-        playwright = require(path.join(__dirname, '../../mj-client/node_modules/playwright'));
-    } catch (_) {
-        console.log(`  SKIP  [${label}] Playwright not installed`);
-        return { passed, failed };
-    }
+    const { mod: playwright, resolvedFrom } = resolvePlaywrightModule();
+    console.log(`  Playwright 包: ${resolvedFrom}`);
 
     const errors = [];
     let browser;
-    try {
-        browser = await playwright.chromium.launch({ headless: true });
-    } catch (e) {
-        console.log(`  SKIP  [${label}] Playwright browser: ${e.message}`);
-        return { passed, failed };
-    }
-    const page = await browser.newPage();
+    let page;
+    const ok = async (c, m) => {
+        if (c) {
+            passed++;
+            console.log(`  OK  [${label}] ${m}`);
+            return;
+        }
+        failed++;
+        console.error(`  FAIL  [${label}] ${m}`);
+        if (page) {
+            const safe = m.replace(/[^\w\u4e00-\u9fff-]+/g, '-').slice(0, 48);
+            const shotPath = path.join(SHOTS, `${label}-${++failShotIdx}-${safe}.png`);
+            try {
+                await page.screenshot({ path: shotPath, fullPage: true });
+                console.error(`  screenshot: ${shotPath}`);
+            } catch (shotErr) {
+                console.error(`  screenshot failed: ${shotErr.message}`);
+            }
+        }
+    };
+
+    console.log(`  [${label}] 启动系统 Chrome…`);
+    ({ browser } = await launchChromeBrowser(playwright, { headless: true }));
+    page = await browser.newPage();
     page.on('pageerror', (e) => errors.push(String(e.message || e)));
     page.on('console', (msg) => {
         if (msg.type() === 'error' && !msg.text().includes('Failed to load resource')) errors.push(msg.text());
@@ -145,10 +160,14 @@ async function runPlaywrightSolvableWorkflow(base, label) {
         });
         state.symmetric = false;
         state.snapToSupport = false;
+        window.__syncDoc = () => {
+            window.__getLevelDocument().mergeEditableFromLayers(state.layers);
+            state.layers = window.__getLevelDocument().buildEditableLayers();
+        };
     });
 
     // 1. 正式界面看不到花色网格
-    ok(await page.evaluate(() => {
+    await ok(await page.evaluate(() => {
         const dev = document.getElementById('dailyDevDebugPanel');
         const grid = document.getElementById('dailyFaceGrid');
         return dev && grid && dev.style.display === 'none';
@@ -156,21 +175,34 @@ async function runPlaywrightSolvableWorkflow(base, label) {
 
     // 2. 新建牌不需要 typeId
     await page.evaluate(() => {
+        loadFromEditorJSON({
+            levelId: 90097, totalPairs: 0, tiles: [], specialTiles: [], discs: [], rotation: null,
+        });
         state.brush = 'normal';
         state.paintMode = 'add';
-        paintAt(0, 0);
-        paintAt(2, 0);
+        paintAt(-3, 0);
     });
-    ok(await page.evaluate(() => {
-        const t = state.layers[0].tiles['0,0'];
+    await ok(await page.evaluate(() => {
+        const t = state.layers[0].tiles['0,-3'];
         return t && t.typeId == null;
     }), 'new tile has null typeId');
 
+    const layout4 = {
+        levelId: 90099,
+        totalPairs: 2,
+        tiles: [
+            { id: 1, layer: 0, row: 0, col: -3, typeId: null, isDark: false },
+            { id: 2, layer: 0, row: 0, col: -1, typeId: null, isDark: false },
+            { id: 3, layer: 0, row: 0, col: 1, typeId: null, isDark: false },
+            { id: 4, layer: 0, row: 0, col: 3, typeId: null, isDark: false },
+        ],
+        specialTiles: [],
+        discs: [],
+        rotation: null,
+    };
+
     // 3–6. 偶数张牌生成 + 布局不变 + 偶数花色 + replay
-    await page.evaluate(() => {
-        paintAt(4, 0);
-        paintAt(6, 0);
-    });
+    await page.evaluate((layout) => { loadFromEditorJSON(layout); }, layout4);
     const gen = await page.evaluate(() => {
         const fpBefore = DailySolvableFill.computeLayoutFingerprint(window.__getEditorExportJson());
         window.__runGenerateSolvable();
@@ -180,71 +212,94 @@ async function runPlaywrightSolvableWorkflow(base, label) {
         const tiles = DailySolvableFill.getDailyTiles(json);
         const counts = {};
         for (const t of tiles) counts[t.typeId] = (counts[t.typeId] || 0) + 1;
-        const evenTypes = Object.values(counts).every((n) => n % 2 === 0);
-        const replay = DailySolvableFill.replaySolution(tiles, st.solution);
-        return { fpBefore, fpAfter, status: st.status, evenTypes, replayOk: replay.ok, tileCount: tiles.length };
+        const evenTypes = Object.keys(counts).length > 0 && Object.values(counts).every((n) => n % 2 === 0);
+        const replay = st.solution?.length ? DailySolvableFill.replaySolution(tiles, st.solution) : { ok: false };
+        return { fpBefore, fpAfter, status: st.status, evenTypes, replayOk: replay.ok, tileCount: tiles.length, lastError: st.lastError };
     });
-    ok(gen.tileCount === 4, 'four tiles placed');
-    ok(gen.status === 'verified', 'status verified after generate');
-    ok(gen.fpBefore === gen.fpAfter, 'layout unchanged after generate');
-    ok(gen.evenTypes, 'all typeId counts even');
-    ok(gen.replayOk, 'saved solution replay passes');
+    await ok(gen.tileCount === 4, 'four tiles placed');
+    await ok(gen.status === 'verified', `status verified after generate (${gen.lastError || ''})`);
+    await ok(gen.fpBefore === gen.fpAfter, 'layout unchanged after generate');
+    await ok(gen.evenTypes, 'all typeId counts even');
+    await ok(gen.replayOk, 'saved solution replay passes');
 
     // 7. 暗牌参与生成
-    await page.evaluate(() => {
-        loadFromEditorJSON({
-            levelId: 90098, totalPairs: 0, tiles: [], specialTiles: [], discs: [], rotation: null,
-        });
-        state.brush = 'dark';
-        paintAt(0, 2);
-        paintAt(2, 2);
-        state.brush = 'normal';
-        paintAt(4, 2);
-        paintAt(6, 2);
+    const layoutDark = {
+        levelId: 90098,
+        totalPairs: 2,
+        tiles: [
+            { id: 10, layer: 0, row: 2, col: -3, typeId: null, isDark: true },
+            { id: 11, layer: 0, row: 2, col: -1, typeId: null, isDark: true },
+            { id: 12, layer: 0, row: 2, col: 1, typeId: null, isDark: false },
+            { id: 13, layer: 0, row: 2, col: 3, typeId: null, isDark: false },
+        ],
+        specialTiles: [
+            { type: 'dark', id: 10, layer: 0, row: 2, col: -3 },
+            { type: 'dark', id: 11, layer: 0, row: 2, col: -1 },
+        ],
+        discs: [],
+        rotation: null,
+    };
+    await page.evaluate((layout) => {
+        loadFromEditorJSON(layout);
         window.__runGenerateSolvable();
-    });
-    ok(await page.evaluate(() => window.__getSolvableState().status === 'verified'), 'dark tiles solvable');
+    }, layoutDark);
+    await ok(await page.evaluate(() => window.__getSolvableState().status === 'verified'), 'dark tiles solvable');
 
-    // 8. 修改布局后状态失效
+    // 8–10. 布局修改失效 → 禁止导出 → 补第二张后重新生成可导出
+    await page.evaluate((layout) => {
+        loadFromEditorJSON(layout);
+        window.__runGenerateSolvable();
+    }, layout4);
     await page.evaluate(() => {
         state.brush = 'normal';
-        paintAt(0, 4);
+        state.paintMode = 'add';
+        paintAt(-3, 4);
+        window.__getLevelDocument().mergeEditableFromLayers(state.layers);
     });
-    ok(await page.evaluate(() => window.__getSolvableState().status === 'layout_stale'), 'layout edit marks stale');
-
-    // 9. 未验证禁止导出
-    ok(await page.evaluate(() => !window.__canExportFormal().ok), 'unverified export blocked');
-
-    // 10. 重新生成后允许导出
-    await page.evaluate(() => window.__runGenerateSolvable());
-    ok(await page.evaluate(() => window.__canExportFormal().ok), 'verified export allowed');
+    await ok(await page.evaluate(() => window.__getSolvableState().status === 'layout_stale'), 'layout edit marks stale');
+    await ok(await page.evaluate(() => !window.__canExportFormal().ok), 'unverified export blocked');
+    const exportGate = await page.evaluate(() => {
+        paintAt(-1, 4);
+        window.__getLevelDocument().mergeEditableFromLayers(state.layers);
+        state.layers = window.__getLevelDocument().buildEditableLayers();
+        window.__runGenerateSolvable();
+        const gate = window.__canExportFormal();
+        return { ok: gate.ok, message: gate.message, status: window.__getSolvableState().status, tileCount: window.__getEditorExportJson().tiles.length };
+    });
+    await ok(exportGate.ok, `verified export allowed (${exportGate.message || exportGate.status}, tiles=${exportGate.tileCount})`);
 
     // 11. 导入完整可解关保留花色
-    const importCheck = await page.evaluate(() => {
-        const json = window.__getEditorExportJson();
-        const savedTypes = json.tiles.map((t) => ({ id: t.id, typeId: t.typeId }));
-        loadFromEditorJSON(json);
-        const after = window.__getEditorExportJson();
-        const same = savedTypes.every((s) => {
-            const t = after.tiles.find((x) => x.id === s.id);
-            return t && t.typeId === s.typeId;
+    let importCheck;
+    try {
+        importCheck = await page.evaluate(() => {
+            const json = window.__getEditorExportJson();
+            const savedTypes = json.tiles.map((t) => ({ id: t.id, typeId: t.typeId }));
+            loadFromEditorJSON(json);
+            const after = window.__getEditorExportJson();
+            const same = savedTypes.every((s) => {
+                const t = after.tiles.find((x) => x.id === s.id);
+                return t && t.typeId === s.typeId;
+            });
+            return { same, status: window.__getSolvableState().status };
         });
-        return { same, status: window.__getSolvableState().status };
-    });
-    ok(importCheck.same, 'import preserves typeIds');
-    ok(importCheck.status === 'verified', 'import re-verified');
+    } catch (e) {
+        importCheck = { same: false, status: 'error', error: String(e.message || e) };
+    }
+    await ok(importCheck.same, `import preserves typeIds (${importCheck.error || ''})`);
+    await ok(importCheck.status === 'verified', 'import re-verified');
 
-    // undo/redo + eraser still work
+    // eraser still works
+    await page.evaluate((layout) => { loadFromEditorJSON(layout); }, layout4);
     await page.evaluate(() => {
         state.brush = 'eraser';
-        paintAt(0, 0);
+        paintAt(-3, 0);
     });
-    ok(await page.evaluate(() => !state.layers[0].tiles['0,0']), 'eraser delete');
+    await ok(await page.evaluate(() => !state.layers[0].tiles['0,-3']), 'eraser delete');
 
     // 12. 控制台无红错
-    ok(errors.length === 0, `console clean (${errors.length} errors: ${errors.join('; ')})`);
+    await ok(errors.length === 0, `console clean (${errors.length} errors: ${errors.join('; ')})`);
     await browser.close();
-    return { passed, failed };
+    return { passed, failed, screenshots: SHOTS };
 }
 
 (async () => {

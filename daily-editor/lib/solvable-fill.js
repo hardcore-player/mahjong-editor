@@ -299,6 +299,17 @@
         return { status: 'UNSOLVABLE' };
     }
 
+    function planTypeAssignments(tiles, opts = {}) {
+        const list = Array.isArray(tiles) ? tiles : getDailyTiles(tiles);
+        const result = generateSolvableTypeIds({ tiles: list }, opts);
+        if (!result.ok) return result;
+        const assignments = new Map();
+        for (const [idStr, typeId] of Object.entries(result.assignedById)) {
+            assignments.set(Number(idStr), typeId);
+        }
+        return { ...result, assignments };
+    }
+
     function generateSolvableTypeIds(level, opts = {}) {
         const fillTiles = getDailyTiles(level).map((t, i) => ({
             id: t.id,
@@ -417,6 +428,7 @@
         verifyByElimination,
         forwardEliminable,
         computeLayoutFingerprint,
+        planTypeAssignments,
         generateSolvableTypeIds,
         verifyImportedLevel,
         replaySolution,
