@@ -253,6 +253,10 @@
     }
 
     function afterLayoutEdit() {
+        if (levelDoc) {
+            levelDoc.mergeEditableFromLayers(state.layers);
+            syncDocIdsToLayers();
+        }
         markLayoutStaleIfNeeded();
         updateStatsPanel();
         scheduleAutosave();
@@ -522,7 +526,6 @@
             document.getElementById('dailyStatsBody').textContent = '未加载关卡';
             return;
         }
-        levelDoc.mergeEditableFromLayers(state.layers);
         try {
             const st = levelDoc.getStats();
             document.getElementById('dailyStatsBody').innerHTML =
@@ -907,8 +910,7 @@
             return;
         }
         if (origUndo) origUndo();
-        markLayoutStaleIfNeeded();
-        updateStatsPanel();
+        afterLayoutEdit();
         draw();
     };
 
@@ -921,8 +923,7 @@
             return;
         }
         if (origRedo) origRedo();
-        markLayoutStaleIfNeeded();
-        updateStatsPanel();
+        afterLayoutEdit();
         draw();
     };
 

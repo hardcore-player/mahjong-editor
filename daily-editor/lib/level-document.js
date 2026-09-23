@@ -494,9 +494,33 @@
 
         mergeEditableFromLayers(layers) {
 
+            const rawById = new Map();
+
+            for (const t of this.raw.tiles ?? []) {
+
+                if (isDailyTile(t)) rawById.set(t.id, t);
+
+            }
+
+            const previousAddedById = new Map();
+
+            const previousAddedByPos = new Map();
+
+            for (const t of this.addedTiles) {
+
+                previousAddedById.set(t.id, t);
+
+                previousAddedByPos.set(`${t.layer},${t.row},${t.col}`, t);
+
+            }
+
+
+
             const seenIds = new Set();
 
-            const nextByKey = new Map();
+            const nextEditedById = new Map();
+
+            const nextAddedTiles = [];
 
             let allocId = this.getMaxId();
 
@@ -532,23 +556,43 @@
 
                     };
 
+
+
                     if (docId != null) {
 
                         seenIds.add(docId);
 
-                        this.editedById.set(docId, patch);
+                        if (rawById.has(docId)) {
+
+                            nextEditedById.set(docId, patch);
+
+                            if (this.deletedIds.has(docId)) this.deletedIds.delete(docId);
+
+                        } else {
+
+                            nextAddedTiles.push({ id: docId, ...patch });
+
+                        }
 
                     } else {
 
-                        allocId += 1;
+                        const posKey = `${layerIdx},${row},${col}`;
 
-                        nextByKey.set(`${layerIdx},${row},${col}`, {
+                        const prevAdded = previousAddedByPos.get(posKey);
 
-                            id: allocId,
+                        if (prevAdded) {
 
-                            ...patch,
+                            seenIds.add(prevAdded.id);
 
-                        });
+                            nextAddedTiles.push({ id: prevAdded.id, ...patch });
+
+                        } else {
+
+                            allocId += 1;
+
+                            nextAddedTiles.push({ id: allocId, ...patch });
+
+                        }
 
                     }
 
@@ -572,7 +616,9 @@
 
 
 
-            this.addedTiles = [...nextByKey.values()];
+            this.editedById = nextEditedById;
+
+            this.addedTiles = nextAddedTiles;
 
 
 
