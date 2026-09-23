@@ -360,14 +360,15 @@
         if (!levelDoc || typeof DailySolvableFill === 'undefined') return;
 
         const fullSnapshot = serializeState();
-        const geoBefore = captureGeometrySignature();
-        const tileCountBefore = countBoardTiles();
-        const typeBefore = captureTypeIdMap();
         const savedLayer = state.currentLayer;
 
         try {
             levelDoc.mergeEditableFromLayers(state.layers);
             syncDocIdsToLayers();
+
+            const geoBefore = captureGeometrySignature();
+            const tileCountBefore = countBoardTiles();
+            const typeBefore = captureTypeIdMap();
 
             let json;
             try {
