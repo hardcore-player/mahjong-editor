@@ -529,7 +529,7 @@
   <div class="tb-group">
     <div class="chip on" id="symToggle" onclick="toggleSym()" title="快捷键 S"><span class="dot"></span>对称</div>
     <div class="chip on" id="allToggle" onclick="toggleAll()" title="快捷键 A"><span class="dot"></span>全部层</div>
-    <div class="chip on" id="snapToggle" onclick="toggleSnap()" title="上层牌必须 4 象限都有支撑"><span class="dot"></span>支撑限制</div>
+    <div class="chip on" id="snapToggle" style="display:none" title="上层牌至少与下一层重叠 1 个半格（不可关闭）"><span class="dot"></span>支撑限制</div>
     <div class="chip on" id="gridToggle" onclick="toggleGrid()"><span class="dot"></span>网格</div>
     <div class="chip" id="coordToggle" onclick="toggleCoord()"><span class="dot"></span>坐标</div>
     <div class="chip" id="typeIdToggle" onclick="toggleTypeId()" title="显示每一张普通牌的牌面 Type ID(导入关卡时保留)"><span class="dot"></span>牌面ID</div>
@@ -2433,7 +2433,7 @@ canvas.addEventListener('mousedown', e => {
     }
     return;
   }
-  if (!state.hoverCell.valid && state.snapToSupport && state.currentLayer > 0) return;
+  if (!state.hoverCell.valid && state.currentLayer > 0) return;
 
   // 吐牌机画笔:再次点击已存在的吐牌机 → 直接消除(像普通牌那样,点已存在的就擦除)
   // 只在 spitter 画笔下生效
@@ -2507,7 +2507,7 @@ canvas.addEventListener('mousemove', e => {
   }
 
   if (state.painting) {
-    if (state.hoverCell && (state.hoverCell.valid || !state.snapToSupport || state.currentLayer === 0)) {
+    if (state.hoverCell && (state.hoverCell.valid || state.currentLayer === 0)) {
       paintAt(state.hoverCell.col, state.hoverCell.row);
     }
   } else {
@@ -2940,61 +2940,54 @@ function bindChip(id, key, redraw) {
 }
 function toggleSym()  { bindChip('symToggle', 'symmetric', false); }
 function toggleAll()  { bindChip('allToggle', 'showAll', true); }
-function toggleSnap() { bindChip('snapToggle', 'snapToSupport', true); }
+function toggleSnap() { /* 至少 1 格支撑为硬规则，不可关闭 */ }
 function toggleGrid() { bindChip('gridToggle', 'showGrid', true); }
 function toggleCoord(){ bindChip('coordToggle', 'showCoord', true); }
 function toggleTypeId(){ bindChip('typeIdToggle', 'showTypeId', true); }
 
-// ========== 支撑问题（象限规则） ==========
-// 规则：上层牌 4 个象限（左上/右上/左下/右下）的中心子格，
-// 每个子格的正下方都必须有下层牌覆盖（可以是不同的下层牌）
+// ========== 支撑问题（半格重叠规则） ==========
+// 2×2 牌 footprint 与紧邻下一层（L-1）任意牌至少重叠 1 个半格；L0 恒合法
 function quadCovered(lowerArr, r, c) {
   return lowerArr.some(lt => lt.row <= r && r < lt.row + 2 && lt.col <= c && c < lt.col + 2);
+}
+
+function lowerTilesArray(layerIndex) {
+  const lower = state.layers[layerIndex - 1]?.tiles || {};
+  return Object.keys(lower).map(k => {
+    const [lr, lc] = k.split(',').map(Number);
+    return { row: lr, col: lc };
+  });
+}
+
+function countSupportCoverageAtLayer(layerIndex, col, row) {
+  if (layerIndex <= 0) return 4;
+  const lowerArr = lowerTilesArray(layerIndex);
+  const quads = [[row, col], [row, col + 1], [row + 1, col], [row + 1, col + 1]];
+  let covered = 0;
+  quads.forEach(([r, c]) => {
+    if (quadCovered(lowerArr, r, c)) covered++;
+  });
+  return covered;
+}
+
+function hasSupportAtLayer(layerIndex, col, row) {
+  return countSupportCoverageAtLayer(layerIndex, col, row) >= 1;
 }
 
 function findSupportIssues() {
   const issues = new Set();
   for (let l = 1; l < state.layers.length; l++) {
     const upper = state.layers[l].tiles;
-    const lower = state.layers[l - 1].tiles;
-    const lowerArr = Object.keys(lower).map(k => {
-      const [lr, lc] = k.split(',').map(Number);
-      return { row: lr, col: lc };
-    });
-
     Object.keys(upper).forEach(key => {
       const [ur, uc] = key.split(',').map(Number);
-      const quads = [[ur, uc], [ur, uc + 1], [ur + 1, uc], [ur + 1, uc + 1]];
-      let covered = 0;
-      quads.forEach(([r, c]) => {
-        if (quadCovered(lowerArr, r, c)) covered++;
-      });
-      if (covered < 4) issues.add(key);
+      if (countSupportCoverageAtLayer(l, uc, ur) === 0) issues.add(key);
     });
   }
   return issues;
 }
 
-// 检查某个位置（指定层）是否有支撑（2x2 footprint 全部被下层覆盖）
-function hasSupportAtLayer(layerIndex, col, row) {
-  if (layerIndex <= 0) return true; // 底层恒有支撑
-  const lower = state.layers[layerIndex - 1].tiles;
-  const lowerArr = Object.keys(lower).map(k => {
-    const [lr, lc] = k.split(',').map(Number);
-    return { row: lr, col: lc };
-  });
-  const quads = [[row, col], [row, col + 1], [row + 1, col], [row + 1, col + 1]];
-  let covered = 0;
-  quads.forEach(([r, c]) => {
-    if (quadCovered(lowerArr, r, c)) covered++;
-  });
-  return covered === 4;
-}
-
-// 检查某个位置（当前层）是否有支撑
 function hasSupportAt(col, row) {
   if (state.currentLayer === 0) return true;
-  if (!state.snapToSupport) return true;
   return hasSupportAtLayer(state.currentLayer, col, row);
 }
 

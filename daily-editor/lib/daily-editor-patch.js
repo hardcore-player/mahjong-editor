@@ -823,6 +823,11 @@
         if (!isPlaceable(layer, key)) return;
         if (state.symmetric && mcol !== col && !isPlaceable(layer, mkey)) return;
 
+        if (state.currentLayer > 0) {
+            if (!hasSupportAtLayer(state.currentLayer, col, row)) return;
+            if (state.symmetric && mcol !== col && !hasSupportAtLayer(state.currentLayer, mcol, row)) return;
+        }
+
         const newCells = tileOccupiesCells(key);
         if (layer.tiles[key]) {
             const oldCells = tileOccupiesCells(key);
