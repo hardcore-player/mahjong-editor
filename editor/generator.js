@@ -891,7 +891,7 @@ function computeMinSlots(tiles) {
     const marks = {};
     (editorTiles || []).forEach(function (src) {
       if (!src || src.type === 'spitter' || src.spitterOrder != null) return;
-      const interesting = src.type === 'lock' || (src.manualSuit && src.typeId != null);
+      const interesting = src.type === 'lock' || src.type === 'dark' || (src.manualSuit && src.typeId != null);
       if (!interesting) return;
       marks[src.layer + ',' + src.row + ',' + src.col] = src;
     });
@@ -909,6 +909,8 @@ function computeMinSlots(tiles) {
       if (src.type === 'lock') {
         lt.type = 'lock';
         lt.isLock = true;
+      } else if (src.type === 'dark') {
+        lt.type = 'dark';
       }
       if (src.manualSuit && src.typeId != null) {
         lt.manualSuit = true;
@@ -1148,10 +1150,15 @@ function computeMinSlots(tiles) {
     const editorDarkIdx = [];
     const marked = new Set();
     (editorSpecial || []).forEach(function (s) {
-      if (s.type === 'dark') {
-        const i = tiles.findIndex(function (t) { return t.layer === s.layer && t.row === s.row && t.col === s.col; });
-        if (i >= 0 && !marked.has(i)) { editorDarkIdx.push(i); marked.add(i); }
-      }
+      const i = tiles.findIndex(function (t) {
+        return t.spitterOrder == null && t.type !== 'spitter' && t.layer === s.layer && t.row === s.row && t.col === s.col;
+      });
+      if (i < 0) return;
+      if (s.type === 'lock') { tiles[i].type = 'lock'; tiles[i].isLock = true; }
+      if (s.type === 'dark' && !marked.has(i)) { editorDarkIdx.push(i); marked.add(i); }
+    });
+    tiles.forEach(function (t, i) {
+      if (t.type === 'dark' && !marked.has(i)) { editorDarkIdx.push(i); marked.add(i); }
     });
     // ===== 校验 target 位置支撑 =====
     // L1+ 的吐牌机：指向的位置必须有支撑（下方有下层牌托住），否则生成报错
@@ -1263,19 +1270,30 @@ function computeMinSlots(tiles) {
     let darkIdx = editorDarkIdx.slice();
     const lockIdx = [];
     const queuePinIdx = [];
+    const keepFaceIdx = [];
     tiles.forEach(function (t, i) {
       if (t.type === 'lock' || t.isLock) lockIdx.push(i);
       if (t.spitterOrder != null && t.manualSuit) queuePinIdx.push(i);
+      // 已经手填花色、又不是暗牌笔的，不能再被暗牌比例翻成暗牌
+      if (t.manualSuit && t.type !== 'dark' && t.type !== 'lock' && !t.isLock) keepFaceIdx.push(i);
     });
     lockIdx.forEach(function (i) { marked.add(i); });
     queuePinIdx.forEach(function (i) { marked.add(i); });
-    if (darkMode) {
-      const darkRng = makeRng(99999);
-      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx.concat(queuePinIdx) };
-      if (darkRatio != null) darkOpts.totalCount = Math.max(1, Math.round(tiles.length * darkRatio));
-      assignDarkTiles(tiles, darkRng, darkOpts).forEach(function (i) {
-        if (!marked.has(i)) { darkIdx.push(i); marked.add(i); }
-      });
+    keepFaceIdx.forEach(function (i) { marked.add(i); });
+    if (darkMode && darkRatio != null) {
+      const target = Math.max(1, Math.round(tiles.length * darkRatio));
+      const need = Math.max(0, target - darkIdx.length);
+      if (need > 0) {
+        const darkRng = makeRng(99999);
+        const darkOpts = {
+          coverageRate: darkCoverage,
+          totalCount: need,
+          excludeIdx: lockIdx.concat(queuePinIdx).concat(keepFaceIdx).concat(editorDarkIdx)
+        };
+        assignDarkTiles(tiles, darkRng, darkOpts).forEach(function (i) {
+          if (!marked.has(i)) { darkIdx.push(i); marked.add(i); }
+        });
+      }
     }
     const darkSet = new Set(darkIdx);
     tiles.sort(function (a, b) { return a.layer - b.layer || a.row - b.row || a.col - b.col; });
@@ -1287,7 +1305,7 @@ function computeMinSlots(tiles) {
         o.isDark = false;
         o.type = 'lock';
       } else {
-        o.isDark = darkSet.has(t._idx);
+        o.isDark = darkSet.has(t._idx) || t.type === 'dark';
       }
       return o;
     });
@@ -1545,18 +1563,29 @@ function computeMinSlots(tiles) {
     // 暗牌。锁牌保持锁牌，不会被随机改成暗牌。
     const lockIdx = [];
     const queuePinIdx = [];
+    const keepFaceIdx = [];
+    const paintedDarkIdx = [];
     filled.tiles.forEach(function (t, i) {
       if (t.type === 'lock' || t.isLock) lockIdx.push(i);
+      else if (t.type === 'dark') paintedDarkIdx.push(i);
       if (t.spitterOrder != null && t.manualSuit) queuePinIdx.push(i);
+      if (t.manualSuit && t.type !== 'dark' && t.type !== 'lock' && !t.isLock) keepFaceIdx.push(i);
     });
-    const dSet = new Set();
-    if (darkMode) {
-      const darkRng = makeRng(7777);
-      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx.concat(queuePinIdx) };
-      if (darkRatio != null) darkOpts.totalCount = Math.max(1, Math.round(filled.tiles.length * darkRatio));
-      assignDarkTiles(filled.tiles, darkRng, darkOpts).forEach(function (j) {
-        if (lockIdx.indexOf(j) < 0 && queuePinIdx.indexOf(j) < 0) dSet.add(j);
-      });
+    const dSet = new Set(paintedDarkIdx);
+    if (darkMode && darkRatio != null) {
+      const target = Math.max(1, Math.round(filled.tiles.length * darkRatio));
+      const need = Math.max(0, target - dSet.size);
+      if (need > 0) {
+        const darkRng = makeRng(7777);
+        const darkOpts = {
+          coverageRate: darkCoverage,
+          totalCount: need,
+          excludeIdx: lockIdx.concat(queuePinIdx).concat(keepFaceIdx).concat(paintedDarkIdx)
+        };
+        assignDarkTiles(filled.tiles, darkRng, darkOpts).forEach(function (j) {
+          if (!dSet.has(j) && lockIdx.indexOf(j) < 0 && queuePinIdx.indexOf(j) < 0 && keepFaceIdx.indexOf(j) < 0) dSet.add(j);
+        });
+      }
     }
     filled.tiles = filled.tiles.map(function (t, j) {
       const isLock = t.type === 'lock' || t.isLock === true;

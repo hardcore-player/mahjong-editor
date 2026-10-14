@@ -774,6 +774,12 @@
         <button class="sbtn" style="padding:4px 10px; font-size:11px;" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强刷</button>
       </div>
       <div class="gh-item">
+        <div class="gh-title">v4.12.1 · 2026-10-14</div>
+        <div class="gh-desc">
+          • 修复编辑器一打开脚本就中断，右侧试玩预览不出来。按当前形状生成后可以重新试玩。
+        </div>
+      </div>
+      <div class="gh-item">
         <div class="gh-title">v4.12.0 · 2026-10-14</div>
         <div class="gh-desc">
           • 吐牌器：用「上色」点中一台吐牌器，可以给里面每一张指定花色。第 1 张先吐出。没填的仍随机补，不会改掉填过的。<br>
@@ -1481,7 +1487,7 @@
 </div>
 
 <script src="manual-rules.js"></script>
-<script src="generator.js?v=482"></script>
+<script src="generator.js?v=483"></script>
 <script>
 // ========== 配置：编辑器坐标显示范围 ==========
 // 横向固定 12 个子格 = 6 个麻将位（每张牌占 2 子格）
@@ -3250,7 +3256,7 @@ function buildEditorShape() {
 }
 
 // ========== 版本检测：发现新版本时提示强刷 ==========
-window.APP_VERSION = 'v4.12.0'; // 部署时同步更新，与 version.json 一致
+window.APP_VERSION = 'v4.12.1'; // 部署时同步更新，与 version.json 一致
 let versionCheckTimer = null;
 let versionBannerShown = false;
 function checkNewVersion() {
@@ -4542,7 +4548,7 @@ window.addEventListener('keydown', function (e) {
   if (e.key === '6') setBrush('leaf');
 });
 
-window.mfToggleLeaf = mfToggleLeaf;
+window.mfToggleLeafLayer = mfToggleLeafLayer;
 window.mfSelectSuit = mfSelectSuit;
 
 const _mfUpdateUI = updateUI;
