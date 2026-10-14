@@ -876,6 +876,17 @@ function computeMinSlots(tiles) {
     return null;
   }
 
+  // 吐牌器队列里手填的花色。没填的位置保持 null，仍由随机填色补。
+  function applyQueueSuit(tile, sp, order) {
+    const preset = sp && Array.isArray(sp.queueSuits) ? sp.queueSuits : [];
+    const raw = preset[order - 1];
+    if (raw == null || raw === '') return;
+    const suit = Number(raw);
+    if (!isFinite(suit)) return;
+    tile.typeId = suit;
+    tile.manualSuit = true;
+  }
+
   function stampEditorMarks(levelTiles, editorTiles) {
     const marks = {};
     (editorTiles || []).forEach(function (src) {
@@ -1164,14 +1175,16 @@ function computeMinSlots(tiles) {
       const targetCol = sp.col + ({up:0,down:0,left:-2,right:2}[sp.dir] || 0);
       const queueCount = sp.count; // count = 队列牌数量
       for (let i = 1; i <= queueCount; i++) {
-        tiles.push({
+        const qt = {
           id: 0,
           layer: sp.layer, // 与 target 同层（不叠放，一次只显示一张）
           row: targetRow,
           col: targetCol,
           typeId: null,
           spitterOrder: i,
-        });
+        };
+        applyQueueSuit(qt, sp, i);
+        tiles.push(qt);
       }
     }
 
@@ -1249,13 +1262,16 @@ function computeMinSlots(tiles) {
 
     let darkIdx = editorDarkIdx.slice();
     const lockIdx = [];
+    const queuePinIdx = [];
     tiles.forEach(function (t, i) {
       if (t.type === 'lock' || t.isLock) lockIdx.push(i);
+      if (t.spitterOrder != null && t.manualSuit) queuePinIdx.push(i);
     });
     lockIdx.forEach(function (i) { marked.add(i); });
+    queuePinIdx.forEach(function (i) { marked.add(i); });
     if (darkMode) {
       const darkRng = makeRng(99999);
-      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx };
+      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx.concat(queuePinIdx) };
       if (darkRatio != null) darkOpts.totalCount = Math.max(1, Math.round(tiles.length * darkRatio));
       assignDarkTiles(tiles, darkRng, darkOpts).forEach(function (i) {
         if (!marked.has(i)) { darkIdx.push(i); marked.add(i); }
@@ -1265,7 +1281,7 @@ function computeMinSlots(tiles) {
     tiles.sort(function (a, b) { return a.layer - b.layer || a.row - b.row || a.col - b.col; });
     tiles.forEach(function (t, i) { t.id = i + 1; });
     const finalTiles = tiles.map(function (t) {
-      const o = Object.assign({}, t); delete o._idx; delete o.pin;
+      const o = Object.assign({}, t); delete o._idx; delete o.pin; delete o.queueSuits;
       o.isLock = t.type === 'lock' || t.isLock === true;
       if (o.isLock) {
         o.isDark = false;
@@ -1285,7 +1301,8 @@ function computeMinSlots(tiles) {
     return {
       levelId: 1, totalPairs: Math.floor(finalTiles.length / 2), tiles: finalTiles, specialTiles: specialTiles,
       rotation: rotation, discs: editorDiscs, _difficulty: diff,
-      leafCover: !!options.leafCover,
+      leafCover: Array.isArray(options.leafLayers) ? options.leafLayers.length > 0 : !!options.leafCover,
+      leafLayers: Array.isArray(options.leafLayers) ? options.leafLayers.slice() : null,
       manualSuits: fillTiles.some(function (t) { return t.pin != null; })
     };
   }
@@ -1433,14 +1450,16 @@ function computeMinSlots(tiles) {
         // 所有队列牌放在同一层（与 target 同层）
         const queueCount = sp.count;
         for (let i = 1; i <= queueCount; i++) {
-          queueTiles.push({
+          const qt = {
             id: 0,
             layer: sp.layer, // 与 target 同层（不叠放，一次只显示一张）
             row: targetRow,
             col: targetCol,
             typeId: null,
             spitterOrder: i,
-          });
+          };
+          applyQueueSuit(qt, sp, i);
+          queueTiles.push(qt);
         }
       }
 
@@ -1525,16 +1544,18 @@ function computeMinSlots(tiles) {
 
     // 暗牌。锁牌保持锁牌，不会被随机改成暗牌。
     const lockIdx = [];
+    const queuePinIdx = [];
     filled.tiles.forEach(function (t, i) {
       if (t.type === 'lock' || t.isLock) lockIdx.push(i);
+      if (t.spitterOrder != null && t.manualSuit) queuePinIdx.push(i);
     });
     const dSet = new Set();
     if (darkMode) {
       const darkRng = makeRng(7777);
-      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx };
+      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx.concat(queuePinIdx) };
       if (darkRatio != null) darkOpts.totalCount = Math.max(1, Math.round(filled.tiles.length * darkRatio));
       assignDarkTiles(filled.tiles, darkRng, darkOpts).forEach(function (j) {
-        if (lockIdx.indexOf(j) < 0) dSet.add(j);
+        if (lockIdx.indexOf(j) < 0 && queuePinIdx.indexOf(j) < 0) dSet.add(j);
       });
     }
     filled.tiles = filled.tiles.map(function (t, j) {
@@ -1556,7 +1577,8 @@ function computeMinSlots(tiles) {
     const diff = evaluateDifficulty(filled, darkIds, darkWeight);
     filled._difficulty = diff;
     filled.discs = editorDiscs;
-    filled.leafCover = !!options.leafCover;
+    filled.leafCover = Array.isArray(options.leafLayers) ? options.leafLayers.length > 0 : !!options.leafCover;
+    filled.leafLayers = Array.isArray(options.leafLayers) ? options.leafLayers.slice() : null;
     if (filled.manualSuits == null) filled.manualSuits = filled.tiles.some(function (t) { return !!t.manualSuit; });
     return filled;
   }

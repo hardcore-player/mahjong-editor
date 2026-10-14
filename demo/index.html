@@ -1503,6 +1503,7 @@ const MF_RULES = window.ManualRules;
 const MF_KEY_SUIT = MF_RULES.KEY_SUIT;
 let mfFixedFaces = false;
 let mfLeafCover = false;
+let mfLeafLayers = null;
 
 function mfSvgUri(svg) {
   return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
@@ -1585,6 +1586,11 @@ function mfAnnotateTiles(json) {
     }
   });
 }
+function mfLeafHits(tile, active) {
+  if (!mfLeafCover || !tile) return false;
+  if (mfLeafLayers && mfLeafLayers.indexOf(tile.layer) < 0) return false;
+  return mfHasAbove(tile, active);
+}
 function mfDecorateBoard() {
   const active = getActiveTiles();
   document.querySelectorAll('#board .tile[data-id]').forEach(function (el) {
@@ -1593,7 +1599,7 @@ function mfDecorateBoard() {
     if (!tile || tile.type === 'spitter') return;
     const img = el.querySelector('.tile-img');
     if (!img) return;
-    if (mfLeafCover && mfHasAbove(tile, active)) {
+    if (mfLeafHits(tile, active)) {
       img.src = MF_LEAF_URI;
       el.dataset.type = '';
       el.classList.add('leaf-covered');
@@ -1643,14 +1649,15 @@ clickTile = function (id) {
 const _mfLoadLevel = loadLevel;
 loadLevel = function (json) {
   mfFixedFaces = !!(json && json.manualSuits);
-  mfLeafCover = !!(json && json.leafCover);
+  mfLeafCover = !!(json && (json.leafCover || (json.leafLayers && json.leafLayers.length)));
+  mfLeafLayers = (json && Array.isArray(json.leafLayers)) ? json.leafLayers.map(Number) : null;
   _mfLoadLevel(json);
   mfAnnotateTiles(json || {});
   const name = document.getElementById('level-name');
   if (name) {
     const bits = [];
     if ((json.tiles || []).some(function (t) { return t.isLock || t.type === 'lock'; })) bits.push('锁牌');
-    if (mfLeafCover) bits.push('树叶');
+    if (mfLeafCover) bits.push(mfLeafLayers && mfLeafLayers.length ? ('树叶 L' + mfLeafLayers.join('、L')) : '树叶');
     if (bits.length) name.textContent = name.textContent + ' · ' + bits.join(' · ');
   }
   render();
