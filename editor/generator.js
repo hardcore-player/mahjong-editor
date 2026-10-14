@@ -876,6 +876,50 @@ function computeMinSlots(tiles) {
     return null;
   }
 
+  // 每种已上花色都是双数时，不再要求搜索出一条消除顺序。
+  // 贪心搜索只试约 100 次，复杂叠牌经常搜不到，但花色本身已经成对。
+  function directEvenAssign(tiles, rng) {
+    if (!tiles.length || tiles.length % 2 !== 0) return null;
+    const counts = {};
+    const free = [];
+    for (let i = 0; i < tiles.length; i++) {
+      const pin = tiles[i].pin;
+      if (pin == null) free.push(i);
+      else counts[pin] = (counts[pin] || 0) + 1;
+    }
+    if (Object.keys(counts).some(function (k) { return counts[k] % 2 !== 0; })) return null;
+    const assigned = new Array(tiles.length);
+    for (let i = 0; i < tiles.length; i++) {
+      assigned[i] = tiles[i].pin != null ? Number(tiles[i].pin) : null;
+    }
+    let keyPins = 0;
+    let locks = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      if (tiles[i].isLock) locks++;
+      if (!tiles[i].isLock && tiles[i].pin === KEY_SUIT) keyPins++;
+    }
+    let needKeys = locks > 0 ? 2 - keyPins : (keyPins === 1 ? 1 : 0);
+    if (needKeys < 0) return null;
+    let open = free.slice();
+    if (needKeys > 0) {
+      const pool = open.filter(function (i) { return !tiles[i].isLock; });
+      if (pool.length < needKeys) return null;
+      shuffle(pool, rng);
+      for (let k = 0; k < needKeys; k++) {
+        assigned[pool[k]] = KEY_SUIT;
+        open = open.filter(function (i) { return i !== pool[k]; });
+      }
+    }
+    if (open.length % 2 !== 0) return null;
+    shuffle(open, rng);
+    for (let i = 0; i < open.length; i += 2) {
+      const type = 1 + Math.floor(rng() * TYPE_COUNT);
+      assigned[open[i]] = type;
+      assigned[open[i + 1]] = type;
+    }
+    return { assigned: assigned };
+  }
+
   // 吐牌器队列里手填的花色。没填的位置保持 null，仍由随机填色补。
   function applyQueueSuit(tile, sp, order) {
     const preset = sp && Array.isArray(sp.queueSuits) ? sp.queueSuits : [];
@@ -1236,8 +1280,11 @@ function computeMinSlots(tiles) {
       result = { assigned: fillTiles.map(function (t) { return t.typeId; }) };
     } else if (pinned.use) {
       const startSeed = Math.floor(Math.random() * 1000) + 1;
-      for (let seed = startSeed; seed <= startSeed + 100 && !result; seed++) {
-        result = backwardFillPinned(fillTiles, makeRng(seed * 9301 + 49297), slotPressure);
+      result = directEvenAssign(fillTiles, makeRng(startSeed * 9301 + 49297));
+      if (!result) {
+        for (let seed = startSeed; seed <= startSeed + 100 && !result; seed++) {
+          result = backwardFillPinned(fillTiles, makeRng(seed * 9301 + 49297), slotPressure);
+        }
       }
       if (!result) throw new Error('手填的花色和锁牌在这个形状下配不成可解关卡。请改几张花色，或不要把钥匙放在锁牌下面。');
     } else {
@@ -1495,7 +1542,7 @@ function computeMinSlots(tiles) {
         let result = null;
         try {
           result = pinned.use
-            ? backwardFillPinned(fillTiles, makeRng(seed * 1000 + 42), slotPressure)
+            ? (directEvenAssign(fillTiles, makeRng(seed * 1000 + 42)) || backwardFillPinned(fillTiles, makeRng(seed * 1000 + 42), slotPressure))
             : backwardFill(fillTiles, makeRng(seed * 1000 + 42), slotPressure);
         } catch (e) {
           if (pinned.use && e.message && e.message.indexOf('锁牌不能') === 0) throw e;
