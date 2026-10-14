@@ -573,6 +573,7 @@ function assignDarkTiles(tiles, rng, options) {
   options = options || {};
   const coverageRate = options.coverageRate != null ? options.coverageRate : 1; // 默认全覆盖
   const totalCount = options.totalCount; // 暗牌总数上限;undefined/<=0 = 无暗牌
+  const exclude = new Set((options.excludeIdx || []).map(Number));
   // 暗牌总数 <= 0 → 一张暗牌都没有(自然也没有暗钩)
   if (totalCount == null || totalCount <= 0) return [];
   const byType = {};
@@ -599,12 +600,12 @@ function assignDarkTiles(tiles, rng, options) {
   for (let p = 0; p < hookTarget && p < buriedPairs.length; p++) {
     const arr = buriedPairs[p];
     // 找该花色中第一个被埋的牌作为暗牌
-    const buried = arr.find(x => isTileBuried(x.t, tiles));
+    const buried = arr.find(x => !exclude.has(x.i) && isTileBuried(x.t, tiles));
     if (buried && !marked.has(buried.i)) { darkIdx.push(buried.i); marked.add(buried.i); }
   }
   // 阶段二:补随机暗牌(纯钩子模式时跳过)
   if (totalCount != null) {
-    const candidates = tiles.map((_, i) => i).filter(i => !marked.has(i));
+    const candidates = tiles.map((_, i) => i).filter(i => !marked.has(i) && !exclude.has(i));
     shuffle(candidates, rng);
     for (const i of candidates) {
       if (darkIdx.length >= totalCount) break;
@@ -823,6 +824,289 @@ function computeMinSlots(tiles) {
   }
   return { minSlots: Math.max(1, maxSlots), solvable: true };
 }
+  // ========= 手填花色 / 锁牌 =========
+  // 钥匙是花色，不是牌型。有锁牌时，非锁牌里正好 2 张是这个花色。
+  const KEY_SUIT = 100;
+
+  function preparePinnedFill(fillTiles) {
+    fillTiles.forEach(function (t) {
+      t.isLock = t.type === 'lock' || t.isLock === true;
+      if (t.isLock) t.type = 'lock';
+      if (t.manualSuit && t.typeId != null && t.type !== 'spitter') t.pin = Number(t.typeId);
+      else t.pin = null;
+    });
+    const use = fillTiles.some(function (t) { return t.pin != null || t.isLock; });
+    return { use: use, error: use ? pinConstraintError(fillTiles) : null };
+  }
+
+  function pinConstraintError(tiles) {
+    if (!tiles.length) return null;
+    if (tiles.length % 2 !== 0) return '可消除的牌数是奇数，无法配对';
+    let keyPins = 0;
+    let locks = 0;
+    let freeNonLock = 0;
+    let freeLock = 0;
+    const counts = {};
+    for (let i = 0; i < tiles.length; i++) {
+      const t = tiles[i];
+      if (t.isLock && t.pin === KEY_SUIT) return '锁牌不能画成钥匙，否则钥匙被锁住就开不了锁';
+      if (t.isLock) locks++;
+      if (t.pin === KEY_SUIT) {
+        if (!t.isLock) keyPins++;
+      } else if (t.pin != null) {
+        counts[t.pin] = (counts[t.pin] || 0) + 1;
+      } else if (t.isLock) {
+        freeLock++;
+      } else {
+        freeNonLock++;
+      }
+    }
+    if (keyPins > 2) return '钥匙花色只能有 2 张，现在画了 ' + keyPins + ' 张';
+    let extraKeys = 0;
+    if (locks > 0) extraKeys = 2 - keyPins;
+    else if (keyPins === 1) extraKeys = 1;
+    if (extraKeys > freeNonLock) {
+      return '有锁牌时需要正好 2 张钥匙花色，还差 ' + extraKeys + ' 张，没有空着的非锁牌可以填';
+    }
+    const freeAfter = freeNonLock + freeLock - extraKeys;
+    let odds = 0;
+    Object.keys(counts).forEach(function (k) { if (counts[k] % 2) odds++; });
+    if (odds > freeAfter) return '有 ' + odds + ' 种花色填成了单数，剩下的空牌不够把它们配成对';
+    if ((freeAfter - odds) % 2 !== 0) return '空着的牌数无法和手填花色一起配成对';
+    return null;
+  }
+
+  function stampEditorMarks(levelTiles, editorTiles) {
+    const marks = {};
+    (editorTiles || []).forEach(function (src) {
+      if (!src || src.type === 'spitter' || src.spitterOrder != null) return;
+      const interesting = src.type === 'lock' || (src.manualSuit && src.typeId != null);
+      if (!interesting) return;
+      marks[src.layer + ',' + src.row + ',' + src.col] = src;
+    });
+    const missing = [];
+    Object.keys(marks).forEach(function (key) {
+      const found = levelTiles.some(function (lt) {
+        return (lt.layer + ',' + lt.row + ',' + lt.col) === key;
+      });
+      if (!found) missing.push(key);
+    });
+    if (missing.length) return missing;
+    levelTiles.forEach(function (lt) {
+      const src = marks[lt.layer + ',' + lt.row + ',' + lt.col];
+      if (!src) return;
+      if (src.type === 'lock') {
+        lt.type = 'lock';
+        lt.isLock = true;
+      }
+      if (src.manualSuit && src.typeId != null) {
+        lt.manualSuit = true;
+        lt.typeId = Number(src.typeId);
+      }
+    });
+    return missing;
+  }
+
+  function backwardFillPinned(tiles, rng, slotPressure) {
+    const n = tiles.length;
+    if (n % 2 !== 0) return null;
+    slotPressure = slotPressure != null ? slotPressure : 0.5;
+    const assigned = new Array(n).fill(null);
+    const pairCounts = {};
+    const keySet = new Set();
+    let keysToPlace = 0;
+    let locks = 0;
+    for (let i = 0; i < n; i++) {
+      if (tiles[i].isLock) locks++;
+      if (!tiles[i].isLock && tiles[i].pin === KEY_SUIT) keySet.add(i);
+    }
+    if (locks > 0) keysToPlace = 2 - keySet.size;
+    else if (keySet.size === 1) keysToPlace = 1;
+    if (keySet.size > 2 || keysToPlace < 0) return null;
+
+    let remaining = tiles.map(function (t, idx) {
+      return {
+        layer: t.layer, row: t.row, col: t.col, _idx: idx,
+        pin: t.pin != null ? Number(t.pin) : null,
+        isLock: !!t.isLock
+      };
+    });
+    let keysCleared = keySet.size + keysToPlace === 0;
+
+    // 手填落单的花色先留一张空牌当伴。这张空牌先不拿去随机配对，也不拿去当钥匙。
+    function layerBlocks(a, b) {
+      return a.layer !== b.layer && Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
+    }
+    const reservedPartner = new Set();
+    const needyPartner = new Map();
+    let reserveFailed = false;
+    (function reservePartners() {
+      const byType = {};
+      for (let i = 0; i < n; i++) {
+        const pin = tiles[i].pin;
+        if (pin != null && pin !== KEY_SUIT) (byType[pin] = byType[pin] || []).push(i);
+      }
+      const needy = [];
+      Object.keys(byType).forEach(function (k) {
+        const arr = shuffle(byType[k].slice(), rng);
+        if (arr.length % 2 === 1) needy.push(arr[0]);
+      });
+      const freeIdx = [];
+      for (let i = 0; i < n; i++) if (tiles[i].pin == null) freeIdx.push(i);
+      shuffle(freeIdx, rng);
+      for (let i = 0; i < needy.length; i++) {
+        const host = tiles[needy[i]];
+        let partner = null;
+        for (let j = 0; j < freeIdx.length; j++) {
+          const fi = freeIdx[j];
+          if (reservedPartner.has(fi)) continue;
+          if (layerBlocks(tiles[fi], host)) continue;
+          partner = fi;
+          break;
+        }
+        if (partner == null) { reserveFailed = true; return; }
+        needyPartner.set(needy[i], partner);
+        reservedPartner.add(partner);
+      }
+    })();
+    if (reserveFailed) return null;
+
+    function releaseNeedy(idx) {
+      if (!needyPartner.has(idx)) return;
+      reservedPartner.delete(needyPartner.get(idx));
+      needyPartner.delete(idx);
+    }
+
+    function canTake(tile, all) {
+      if (locks > 0 && !keysCleared && tile.isLock) return false;
+      return isClickable(tile, all);
+    }
+    function pickType() {
+      const eligible = [];
+      for (let t = 1; t <= TYPE_COUNT; t++) {
+        if ((pairCounts[t] || 0) < 3) eligible.push(t);
+      }
+      if (!eligible.length) {
+        for (let t = 1; t <= TYPE_COUNT; t++) eligible.push(t);
+      }
+      return eligible[Math.floor(rng() * eligible.length)];
+    }
+    function removePair(a, b, type) {
+      releaseNeedy(a._idx);
+      releaseNeedy(b._idx);
+      if (reservedPartner.has(a._idx)) reservedPartner.delete(a._idx);
+      if (reservedPartner.has(b._idx)) reservedPartner.delete(b._idx);
+      assigned[a._idx] = type;
+      assigned[b._idx] = type;
+      if (type !== KEY_SUIT) pairCounts[type] = (pairCounts[type] || 0) + 1;
+      remaining = remaining.filter(function (t) { return t !== a && t !== b; });
+    }
+    function takePair(pool) {
+      const pinned = pool.filter(function (t) { return t.pin != null; });
+      const byPin = {};
+      pinned.forEach(function (t) { (byPin[t.pin] = byPin[t.pin] || []).push(t); });
+      const kinds = Object.keys(byPin);
+      shuffle(kinds, rng);
+      for (let i = 0; i < kinds.length; i++) {
+        const group = byPin[kinds[i]];
+        if (group.length >= 2) return { a: group[0], b: group[1], type: Number(kinds[i]) };
+      }
+      const frees = pool.filter(function (t) { return t.pin == null && !reservedPartner.has(t._idx); });
+      shuffle(frees, rng);
+      for (let i = 0; i < kinds.length; i++) {
+        const only = byPin[kinds[i]];
+        if (only.length === 1 && frees.length && !needyPartner.has(only[0]._idx)) {
+          return { a: only[0], b: frees[0], type: Number(kinds[i]) };
+        }
+      }
+      if (frees.length < 2) return null;
+      let a = frees[0];
+      let b = frees[1];
+      if (slotPressure > 0 && frees.length >= 4 && rng() < slotPressure) {
+        const sorted = frees.slice().sort(function (x, y) { return x.layer - y.layer; });
+        const low = sorted[0].layer;
+        const high = sorted[sorted.length - 1].layer;
+        if (high - low >= 2) {
+          const tops = shuffle(sorted.filter(function (t) { return t.layer === high; }).slice(), rng);
+          const bot = sorted.find(function (t) { return t.layer === low && t._idx !== tops[0]._idx; });
+          if (bot) { a = tops[0]; b = bot; }
+        }
+      }
+      return { a: a, b: b, type: pickType() };
+    }
+
+    let guard = 0;
+    while (remaining.length) {
+      if (++guard > n * 4) return null;
+      const clickable = remaining.filter(function (t) { return canTake(t, remaining); });
+      if (clickable.length < 2) return null;
+
+      if (keySet.size === 2) {
+        const ready = clickable.filter(function (t) { return keySet.has(t._idx); });
+        if (ready.length === 2) {
+          removePair(ready[0], ready[1], KEY_SUIT);
+          keysCleared = true;
+          continue;
+        }
+      }
+      if (keysToPlace === 2 && keySet.size === 0) {
+        const frees = shuffle(clickable.filter(function (t) {
+          return !t.isLock && t.pin == null && !reservedPartner.has(t._idx);
+        }).slice(), rng);
+        if (frees.length >= 2) {
+          keySet.add(frees[0]._idx);
+          keySet.add(frees[1]._idx);
+          removePair(frees[0], frees[1], KEY_SUIT);
+          keysToPlace = 0;
+          keysCleared = true;
+          continue;
+        }
+      }
+      if (keysToPlace === 1 && keySet.size === 1) {
+        const key = clickable.find(function (t) { return keySet.has(t._idx); });
+        const frees = shuffle(clickable.filter(function (t) {
+          return !t.isLock && t.pin == null && !keySet.has(t._idx) && !reservedPartner.has(t._idx);
+        }).slice(), rng);
+        if (key && frees.length) {
+          keySet.add(frees[0]._idx);
+          removePair(key, frees[0], KEY_SUIT);
+          keysToPlace = 0;
+          keysCleared = true;
+          continue;
+        }
+      }
+
+      let forced = null;
+      needyPartner.forEach(function (partnerIdx, needyIdx) {
+        if (forced) return;
+        const a = clickable.find(function (t) { return t._idx === needyIdx; });
+        const b = clickable.find(function (t) { return t._idx === partnerIdx; });
+        if (a && b) forced = { a: a, b: b, type: a.pin };
+      });
+      if (forced) {
+        removePair(forced.a, forced.b, forced.type);
+        continue;
+      }
+
+      const pool = clickable.filter(function (t) { return !keySet.has(t._idx); });
+      const pair = takePair(pool);
+      if (!pair) return null;
+      if (pair.a.pin != null && pair.b.pin != null && pair.a.pin !== pair.b.pin) return null;
+      removePair(pair.a, pair.b, pair.type);
+    }
+    if (locks > 0 && !keysCleared) return null;
+    for (let i = 0; i < n; i++) {
+      if (tiles[i].pin != null && assigned[i] !== tiles[i].pin) return null;
+      if (tiles[i].isLock && assigned[i] === KEY_SUIT) return null;
+    }
+    const tally = {};
+    assigned.forEach(function (typeId) { tally[typeId] = (tally[typeId] || 0) + 1; });
+    const bad = Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; });
+    if (bad) return null;
+    if (locks > 0 && tally[KEY_SUIT] !== 2) return null;
+    return { assigned: assigned };
+  }
+
   // ========= 高层辅助 =========
   function fillEditorShape(editorTiles, editorSpecial, options) {
     options = options || {};
@@ -907,11 +1191,16 @@ function computeMinSlots(tiles) {
       throw new Error('总可消除牌数 ' + fillTiles.length + ' 为奇数，无法配对。请调整普通牌数量或吐牌机 count（普通牌 + 队列牌 必须为偶数）');
     }
 
+    // 手填花色 / 锁牌走独立填色：填过的 typeId 不改，空牌才随机。
+    // 没有任何手填、也没有锁牌时，仍走原来的整关保留或 backwardFill。
+    const pinned = preparePinnedFill(fillTiles);
+    if (pinned.error) throw new Error(pinned.error);
+
     // ===== 完整导入 → 保留原牌面(不重新填色) =====
     // 仅当:无吐牌机队列牌,且每张可消除牌都带非空 typeId(用户导入了完整关卡)。
     // 且花色计数成对 + 正向可解。任一不满足 → 照旧 backwardFill 全量重填(结果仍合法)。
     const hasQueue = fillTiles.some(function (t) { return t.spitterOrder != null; });
-    const fullImported = !hasQueue && fillTiles.length > 0 && fillTiles.every(function (t) { return t.typeId != null; });
+    const fullImported = !pinned.use && !hasQueue && fillTiles.length > 0 && fillTiles.every(function (t) { return t.typeId != null; });
     let preserve = false;
     if (fullImported) {
       const cnt = {};
@@ -925,6 +1214,12 @@ function computeMinSlots(tiles) {
     if (preserve) {
       // 原样使用导入的 typeId(不重新填色),让"导入→生成"复现同一关
       result = { assigned: fillTiles.map(function (t) { return t.typeId; }) };
+    } else if (pinned.use) {
+      const startSeed = Math.floor(Math.random() * 1000) + 1;
+      for (let seed = startSeed; seed <= startSeed + 100 && !result; seed++) {
+        result = backwardFillPinned(fillTiles, makeRng(seed * 9301 + 49297), slotPressure);
+      }
+      if (!result) throw new Error('手填的花色和锁牌在这个形状下配不成可解关卡。请改几张花色，或不要把钥匙放在锁牌下面。');
     } else {
       const startSeed = Math.floor(Math.random() * 1000) + 1;
       for (let seed = startSeed; seed <= startSeed + 100 && !result; seed++) {
@@ -953,9 +1248,14 @@ function computeMinSlots(tiles) {
     // 2. 总可消除牌 = fillTiles + spitter.count,必须偶数(已在前面校验 totalElimination,这里不需要重复)
 
     let darkIdx = editorDarkIdx.slice();
+    const lockIdx = [];
+    tiles.forEach(function (t, i) {
+      if (t.type === 'lock' || t.isLock) lockIdx.push(i);
+    });
+    lockIdx.forEach(function (i) { marked.add(i); });
     if (darkMode) {
       const darkRng = makeRng(99999);
-      const darkOpts = { coverageRate: darkCoverage };
+      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx };
       if (darkRatio != null) darkOpts.totalCount = Math.max(1, Math.round(tiles.length * darkRatio));
       assignDarkTiles(tiles, darkRng, darkOpts).forEach(function (i) {
         if (!marked.has(i)) { darkIdx.push(i); marked.add(i); }
@@ -965,15 +1265,29 @@ function computeMinSlots(tiles) {
     tiles.sort(function (a, b) { return a.layer - b.layer || a.row - b.row || a.col - b.col; });
     tiles.forEach(function (t, i) { t.id = i + 1; });
     const finalTiles = tiles.map(function (t) {
-      const o = Object.assign({}, t); delete o._idx;
-      o.isDark = darkSet.has(t._idx);
+      const o = Object.assign({}, t); delete o._idx; delete o.pin;
+      o.isLock = t.type === 'lock' || t.isLock === true;
+      if (o.isLock) {
+        o.isDark = false;
+        o.type = 'lock';
+      } else {
+        o.isDark = darkSet.has(t._idx);
+      }
       return o;
     });
     const specialTiles = finalTiles.filter(function (t) { return t.isDark; })
       .map(function (t) { return { id: t.id, type: 'dark', layer: t.layer, row: t.row, col: t.col }; });
+    finalTiles.forEach(function (t) {
+      if (t.isLock) specialTiles.push({ id: t.id, type: 'lock', layer: t.layer, row: t.row, col: t.col });
+    });
     const darkIds = new Set(finalTiles.filter(function (t) { return t.isDark; }).map(function (t) { return t.id; }));
     const diff = evaluateDifficulty({ tiles: finalTiles }, darkIds, darkWeight);
-    return { levelId: 1, totalPairs: Math.floor(finalTiles.length / 2), tiles: finalTiles, specialTiles: specialTiles, rotation: rotation, discs: editorDiscs, _difficulty: diff };
+    return {
+      levelId: 1, totalPairs: Math.floor(finalTiles.length / 2), tiles: finalTiles, specialTiles: specialTiles,
+      rotation: rotation, discs: editorDiscs, _difficulty: diff,
+      leafCover: !!options.leafCover,
+      manualSuits: fillTiles.some(function (t) { return t.pin != null; })
+    };
   }
 
   function generateAndFill(options) {
@@ -1099,6 +1413,7 @@ function computeMinSlots(tiles) {
       // 队列牌总数奇数 → 让 shape 也保持奇数（叠加后总牌数才能偶）
       const skipParity = totalQueueTiles % 2 !== 0;
       const level = toEditorJSON(shape, 1, skipParity);
+      if (stampEditorMarks(level.tiles, editorTiles).length) continue;
       // 把编辑器的吐牌机队列牌和吐牌机标记加到 stacked 结果中
       const editorSpitters = options.spitters || [];
       // 堆塔路径:spitter 本体不参与填色(保持 typeId=null,不是麻将)
@@ -1131,14 +1446,22 @@ function computeMinSlots(tiles) {
 
       // fillTiles 包含：普通牌 + 队列牌（排除吐牌机本体）
       const fillTiles = level.tiles.filter((t, i) => !levelSpitterIdxSet.has(i)).concat(queueTiles);
+      const pinned = preparePinnedFill(fillTiles);
+      if (pinned.error && (pinned.error.indexOf('锁牌不能') === 0 || pinned.error.indexOf('钥匙花色只能') === 0)) {
+        throw new Error(pinned.error);
+      }
+      if (pinned.error) continue;
 
       // 填色（让 backwardFill 自己处理奇偶/可解性，不做前置校验）
       const startSeed = Math.floor(Math.random() * 1000) + 1;
       for (let seed = startSeed; seed <= startSeed + 50 && !filled; seed++) {
         let result = null;
         try {
-          result = backwardFill(fillTiles, makeRng(seed * 1000 + 42), slotPressure);
+          result = pinned.use
+            ? backwardFillPinned(fillTiles, makeRng(seed * 1000 + 42), slotPressure)
+            : backwardFill(fillTiles, makeRng(seed * 1000 + 42), slotPressure);
         } catch (e) {
+          if (pinned.use && e.message && e.message.indexOf('锁牌不能') === 0) throw e;
           // backwardFill 抛错（奇数牌数等），跳过此 seed
           continue;
         }
@@ -1148,6 +1471,7 @@ function computeMinSlots(tiles) {
           const assignedTiles = level.tiles.map((t, i) => {
             if (levelSpitterIdxSet.has(i)) return Object.assign({}, t, { typeId: null });
             const newT = Object.assign({}, t, { typeId: result.assigned[fillIdx] });
+            delete newT.pin;
             fillIdx++;
             return newT;
           });
@@ -1179,6 +1503,7 @@ function computeMinSlots(tiles) {
             tiles: assignedTiles,
             specialTiles: [], // spitter 标记在 level.tiles 里通过 type 字段标识
             rotation: options.rotation || null, // 堆塔路径也要输出旋转配置
+            manualSuits: assignedTiles.some(function (t) { return !!t.manualSuit; })
           };
         }
       }
@@ -1198,27 +1523,41 @@ function computeMinSlots(tiles) {
     // 所以总牌数 = shape.tiles.length + 1(spitter) + totalQueueCount,奇偶性 = 偶 ✓
     // (堆塔路径不再额外校验)
 
-    // 暗牌
+    // 暗牌。锁牌保持锁牌，不会被随机改成暗牌。
+    const lockIdx = [];
+    filled.tiles.forEach(function (t, i) {
+      if (t.type === 'lock' || t.isLock) lockIdx.push(i);
+    });
+    const dSet = new Set();
     if (darkMode) {
       const darkRng = makeRng(7777);
-      const darkOpts = { coverageRate: darkCoverage };
+      const darkOpts = { coverageRate: darkCoverage, excludeIdx: lockIdx };
       if (darkRatio != null) darkOpts.totalCount = Math.max(1, Math.round(filled.tiles.length * darkRatio));
-      const darkIdx = assignDarkTiles(filled.tiles, darkRng, darkOpts);
-      const dSet = new Set(darkIdx);
-      const special = [];
-      darkIdx.forEach(function (j) {
-        filled.tiles[j].isDark = true;
-        special.push({ id: filled.tiles[j].id, type: 'dark', layer: filled.tiles[j].layer, row: filled.tiles[j].row, col: filled.tiles[j].col });
+      assignDarkTiles(filled.tiles, darkRng, darkOpts).forEach(function (j) {
+        if (lockIdx.indexOf(j) < 0) dSet.add(j);
       });
-      filled.tiles = filled.tiles.map(function (t, j) { return Object.assign({}, t, { isDark: dSet.has(j) }); });
-      filled.specialTiles = special;
-    } else {
-      filled.tiles = filled.tiles.map(function (t) { return Object.assign({}, t, { isDark: false }); });
     }
-    const darkIds = new Set((filled.specialTiles || []).map(function (s) { return s.id; }));
+    filled.tiles = filled.tiles.map(function (t, j) {
+      const isLock = t.type === 'lock' || t.isLock === true;
+      const o = Object.assign({}, t);
+      delete o.pin;
+      o.isLock = isLock;
+      if (isLock) { o.type = 'lock'; o.isDark = false; }
+      else o.isDark = dSet.has(j);
+      return o;
+    });
+    const special = [];
+    filled.tiles.forEach(function (t) {
+      if (t.isDark) special.push({ id: t.id, type: 'dark', layer: t.layer, row: t.row, col: t.col });
+      if (t.isLock) special.push({ id: t.id, type: 'lock', layer: t.layer, row: t.row, col: t.col });
+    });
+    filled.specialTiles = special;
+    const darkIds = new Set(special.filter(function (s) { return s.type === 'dark'; }).map(function (s) { return s.id; }));
     const diff = evaluateDifficulty(filled, darkIds, darkWeight);
     filled._difficulty = diff;
     filled.discs = editorDiscs;
+    filled.leafCover = !!options.leafCover;
+    if (filled.manualSuits == null) filled.manualSuits = filled.tiles.some(function (t) { return !!t.manualSuit; });
     return filled;
   }
 
@@ -1241,7 +1580,7 @@ function computeMinSlots(tiles) {
     keyOf: keyOf, mirrorRow: mirrorRow, inBounds: inBounds, hasSupport: hasSupport, quadCovered: quadCovered,
     NAMES: NAMES, DARK_RATIO_MIN: DARK_RATIO_MIN, DARK_RATIO_MAX: DARK_RATIO_MAX, DARK_WEIGHT: DARK_WEIGHT,
     makeRng: makeRng, shuffle: shuffle, covers: covers, isClickable: isClickable,
-    desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty,
+    desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, backwardFillPinned: backwardFillPinned, pinConstraintError: pinConstraintError, KEY_SUIT: KEY_SUIT, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty,
     fillEditorShape: fillEditorShape, generateAndFill: generateAndFill, generateStackFromShape: generateStackFromShape, downloadJSON: downloadJSON,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

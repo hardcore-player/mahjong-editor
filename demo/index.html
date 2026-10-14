@@ -333,6 +333,7 @@ body {
   </div>
 </div>
 
+<script src="manual-rules.js"></script>
 <script>
 // ========== 游戏状态 ==========
 let tiles = [];
@@ -1496,6 +1497,164 @@ async function init() {
   }
   loadLevel(SAMPLE_LEVEL);
 }
+
+// 锁牌、钥匙花色、树叶。注入到 demo 主脚本末尾，与 let tiles 同一作用域。
+const MF_RULES = window.ManualRules;
+const MF_KEY_SUIT = MF_RULES.KEY_SUIT;
+let mfFixedFaces = false;
+let mfLeafCover = false;
+
+function mfSvgUri(svg) {
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+function mfTileSvg(kind, label, color, sub) {
+  const subText = sub ? '<text x="50" y="78" text-anchor="middle" font-size="16" fill="' + color + '" font-family="Microsoft YaHei,sans-serif">' + sub + '</text>' : '';
+  const y = sub ? 52 : 62;
+  return mfSvgUri(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 124" data-kind="' + kind + '">' +
+    '<rect x="3" y="3" width="94" height="118" rx="10" fill="#fffdf6" stroke="#c8b894" stroke-width="3"/>' +
+    '<text x="50" y="' + y + '" text-anchor="middle" font-size="28" font-weight="700" fill="' + color + '" font-family="Microsoft YaHei,sans-serif">' + label + '</text>' +
+    subText +
+    '</svg>'
+  );
+}
+function mfFaceUri(typeId) {
+  const meta = MF_RULES.suitMeta(typeId);
+  if (Number(typeId) === MF_KEY_SUIT) return mfTileSvg('keyface', '钥', '#a16207', '匙');
+  const chars = meta.label;
+  if (chars.length === 2) return mfTileSvg('suit', chars[0], meta.color, chars[1]);
+  return mfTileSvg('suit', chars, meta.color, '');
+}
+const MF_LOCK_URI = mfTileSvg('lock', '锁', '#8a5a12', '');
+const MF_LEAF_URI = mfSvgUri(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 124" data-kind="leaf">' +
+  '<rect x="3" y="3" width="94" height="118" rx="10" fill="#e7f6df" stroke="#2f7d32" stroke-width="3"/>' +
+  '<ellipse cx="38" cy="58" rx="16" ry="22" fill="#3d9a45" transform="rotate(-28 38 58)"/>' +
+  '<ellipse cx="62" cy="62" rx="16" ry="22" fill="#2f7d32" transform="rotate(24 62 62)"/>' +
+  '<ellipse cx="50" cy="46" rx="14" ry="20" fill="#57b35a" transform="rotate(-6 50 46)"/>' +
+  '</svg>'
+);
+
+function mfHasAbove(tile, active) {
+  return active.some(function (other) {
+    return other.id !== tile.id && other.type !== 'spitter' && other.layer > tile.layer && overlaps(other, tile);
+  });
+}
+function mfIsLock(tile) {
+  return !!(tile && (tile.isLock || tile.type === 'lock') && !tile.lockOpen);
+}
+function mfFlash(text) {
+  let el = document.getElementById('mfFlash');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'mfFlash';
+    el.style.cssText = 'position:fixed;left:50%;top:64px;transform:translateX(-50%);background:rgba(20,16,10,.88);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;z-index:99999;pointer-events:none;transition:opacity .2s;';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.opacity = '1';
+  clearTimeout(mfFlash._t);
+  mfFlash._t = setTimeout(function () { el.style.opacity = '0'; }, 1400);
+}
+function mfKeysLeft() {
+  return tiles.filter(function (t) {
+    return Number(t.typeId) === MF_KEY_SUIT && !matchedTileIds.has(t.id);
+  }).length;
+}
+function mfOpenLocks() {
+  if (mfKeysLeft() !== 0) return;
+  if (!tiles.some(function (t) { return (t.isLock || t.type === 'lock') && !t.lockOpen; })) return;
+  tiles.forEach(function (t) {
+    if (t.isLock || t.type === 'lock') t.lockOpen = true;
+  });
+  mfFlash('锁牌已全部打开');
+  render();
+}
+function mfAnnotateTiles(json) {
+  const byId = {};
+  (json.specialTiles || []).forEach(function (s) {
+    (byId[s.id] = byId[s.id] || []).push(s);
+  });
+  tiles.forEach(function (t) {
+    t.lockOpen = false;
+    const marks = byId[t.id] || [];
+    if (t.type === 'lock' || t.isLock || marks.some(function (s) { return s.type === 'lock'; })) {
+      t.type = 'lock';
+      t.isLock = true;
+      t.isDark = false;
+    }
+  });
+}
+function mfDecorateBoard() {
+  const active = getActiveTiles();
+  document.querySelectorAll('#board .tile[data-id]').forEach(function (el) {
+    const id = Number(el.dataset.id);
+    const tile = tiles.find(function (t) { return t.id === id; });
+    if (!tile || tile.type === 'spitter') return;
+    const img = el.querySelector('.tile-img');
+    if (!img) return;
+    if (mfLeafCover && mfHasAbove(tile, active)) {
+      img.src = MF_LEAF_URI;
+      el.dataset.type = '';
+      el.classList.add('leaf-covered');
+      return;
+    }
+    if (mfIsLock(tile)) {
+      img.src = MF_LOCK_URI;
+      el.dataset.type = '';
+      el.classList.add('lock-tile');
+    }
+  });
+}
+
+const _mfTileImgSrc = tileImgSrc;
+tileImgSrc = function (typeId) {
+  if (Number(typeId) === MF_KEY_SUIT) return mfFaceUri(MF_KEY_SUIT);
+  if (mfFixedFaces && typeId != null && Number(typeId) >= 1 && Number(typeId) <= 34) return mfFaceUri(typeId);
+  return _mfTileImgSrc(typeId);
+};
+
+const _mfRender = render;
+render = function () {
+  _mfRender();
+  mfDecorateBoard();
+};
+
+const _mfCheckMatch = checkMatch;
+checkMatch = function () {
+  _mfCheckMatch();
+  mfOpenLocks();
+};
+
+const _mfClickTile = clickTile;
+clickTile = function (id) {
+  if (gameOver) return;
+  const active = getActiveTiles();
+  const tile = active.find(function (t) { return t.id === id; });
+  if (tile && mfIsLock(tile)) {
+    if (!isClickable(tile, active)) { _mfClickTile(id); return; }
+    mfFlash('这张牌锁着，先消去两张钥匙');
+    showHint(id);
+    return;
+  }
+  _mfClickTile(id);
+};
+
+const _mfLoadLevel = loadLevel;
+loadLevel = function (json) {
+  mfFixedFaces = !!(json && json.manualSuits);
+  mfLeafCover = !!(json && json.leafCover);
+  _mfLoadLevel(json);
+  mfAnnotateTiles(json || {});
+  const name = document.getElementById('level-name');
+  if (name) {
+    const bits = [];
+    if ((json.tiles || []).some(function (t) { return t.isLock || t.type === 'lock'; })) bits.push('锁牌');
+    if (mfLeafCover) bits.push('树叶');
+    if (bits.length) name.textContent = name.textContent + ' · ' + bits.join(' · ');
+  }
+  render();
+};
 
 window.addEventListener('resize', () => { if (tiles.length) render(); });
 init();

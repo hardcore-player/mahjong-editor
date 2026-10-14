@@ -774,6 +774,14 @@
         <button class="sbtn" style="padding:4px 10px; font-size:11px;" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强刷</button>
       </div>
       <div class="gh-item">
+        <div class="gh-title">v4.11.0 · 2026-10-13</div>
+        <div class="gh-desc">
+          • 手填花色：用「上色」指定一部分牌的花色。生成时这些牌保持原花色，没填的仍按原来的随机规则补齐，两边花色会配成对。<br>
+          • 锁牌：新画笔。锁牌不能点开，也看不到花色。场上只要有锁牌，其他牌里就会有正好 2 张钥匙花色（可以是普通牌或暗牌，不能是锁牌）。这两张消去后，所有锁牌一起打开。<br>
+          • 树叶：打开后，上面还有牌压着的牌全部盖成树叶。压着的牌消去后才看得到花色。普通牌、暗牌、锁牌都会被盖住。
+        </div>
+      </div>
+      <div class="gh-item">
         <div class="gh-title">v4.10.6.5 · 2026-09-01</div>
         <div class="gh-desc">
           • 回滚 v4.10.6.4 浮点圆心 snap,改回整数 snap。用户反馈"不需要这样,像摆麻将一样按 1 个 cell 为单位的移动":disc hover 应在 cell 边界处跳 1 cell(离散步进,像 tile brush 一样),而不是连续浮点圆心。修正:<code>pixelToCell</code> 去掉 <code>opts.float</code> 分支,统一用 <code>floor((wx-bx)/CELL + 1e-6) - OFFSET</code> 整数 snap(与 tile/spitter/rotation 行为一致);mousemove 不再传 <code>{float}</code>。渲染侧 <code>drawDiscAt</code> 维持 <code>+CELL/2</code>(cell 中心,与 demo 对齐)。代价:cell 边界 click 会让 disc 跳到最近 cell 中心(典型 19 px 步进,跟 tile brush 的 2x2 footprint 跳格一致),用户接受这个 "1 cell 步进" 行为
@@ -1465,6 +1473,7 @@
   <div class="hrow"><span><kbd>S</kbd> / <kbd>A</kbd></span><span>对称 / 显示全部层</span></div>
 </div>
 
+<script src="manual-rules.js"></script>
 <script src="generator.js?v=481"></script>
 <script>
 // ========== 配置：编辑器坐标显示范围 ==========
@@ -2111,6 +2120,8 @@ function drawTile(col, row, layerIdx, tile, isCurrent, isHover, isIssue) {
   let baseColor, accentColor, borderColor;
   if (tile.type === 'dark') {
     baseColor = '#5a6d95'; accentColor = '#7c8fb8'; borderColor = '#31427a';
+  } else if (tile.type === 'lock') {
+    baseColor = '#8d6a2f'; accentColor = '#e6c98a'; borderColor = '#6a4a12';
   } else if (tile.type === 'spitter') {
     baseColor = '#b06a2a'; accentColor = '#d8954f'; borderColor = '#7a4a12';
   } else if (tile.type === 'spitterQueue') {
@@ -3185,6 +3196,7 @@ function buildEditorShape() {
       const [r, c] = key.split(',').map(Number);
       // 保留 type 字段（spitter/dark 需要）和 dir/count（spitter 需要）
       const tileEntry = { id: 0, layer: layerIdx, row: r, col: c, typeId: (tile.typeId != null ? tile.typeId : null) };
+      if (tile.manualSuit && tile.typeId != null) tileEntry.manualSuit = true;
       if (tile.type && tile.type !== 'normal') tileEntry.type = tile.type;
       if (tile.type === 'spitter') {
         tileEntry.dir = tile.dir || 'up';
@@ -3219,7 +3231,7 @@ function buildEditorShape() {
 }
 
 // ========== 版本检测：发现新版本时提示强刷 ==========
-window.APP_VERSION = 'v4.10.6.5'; // 部署时同步更新，与 version.json 一致
+window.APP_VERSION = 'v4.11.0'; // 部署时同步更新，与 version.json 一致
 let versionCheckTimer = null;
 let versionBannerShown = false;
 function checkNewVersion() {
@@ -3898,6 +3910,437 @@ function clearResults() {
   renderResults();
   document.getElementById('resultsSection').style.display = 'none';
 }
+
+// 手填花色、锁牌、树叶。和 let state 在同一个脚本里。
+const MF = window.ManualRules;
+state.paintSuit = state.paintSuit || 1;
+state.leafCover = !!state.leafCover;
+
+function mfSuitMeta(id) { return MF.suitMeta(id); }
+
+function mfInstallUI() {
+  const style = document.createElement('style');
+  style.textContent = [
+    '.brush-group { grid-template-columns: 1fr 1fr 1fr; }',
+    '.mf-panel { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }',
+    '.mf-note { font-size: 11px; line-height: 1.55; color: var(--sub); }',
+    '.suit-grid { display: grid; grid-template-columns: repeat(9, 1fr); gap: 3px; margin-top: 6px; }',
+    '.suit-btn { font-size: 10px; line-height: 1.2; padding: 5px 0; border-radius: 4px; cursor: pointer; border: 1px solid var(--line); background: #fffdf8; text-align: center; }',
+    '.suit-btn.on { outline: 2px solid var(--accent); font-weight: 700; background: var(--accent-bg); }',
+    '.suit-btn.g-key { grid-column: span 3; color: #a16207; background: #fff6d8; font-weight: 700; }',
+    '.brush-btn.armed { box-shadow: inset 0 0 0 2px #2f7d32; }',
+    '.mf-actions { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 4px; }'
+  ].join('\n');
+  document.head.appendChild(style);
+
+  const group = document.querySelector('#cardBrush .brush-group');
+  if (group && !group.querySelector('[data-brush="suit"]')) {
+    group.insertAdjacentHTML('beforeend', [
+      '<div class="brush-btn" data-brush="suit" onclick="setBrush(\'suit\')">🎨 上色</div>',
+      '<div class="brush-btn" data-brush="lock" onclick="setBrush(\'lock\')">🔒 锁牌</div>',
+      '<div class="brush-btn" data-brush="leaf" onclick="setBrush(\'leaf\')">🍃 树叶</div>'
+    ].join(''));
+  }
+  const body = document.querySelector('#cardBrush .card-body');
+  if (body && !document.getElementById('mfSuitPanel')) {
+    body.insertAdjacentHTML('beforeend', [
+      '<div id="mfSuitPanel" class="mf-panel" style="display:none">',
+      '<div class="card-sub">选一种花色，再点到牌上。右键擦掉这张的花色。</div>',
+      '<div class="mf-note">填过的花色在生成时保持不变，没填的仍按原来的规则随机补。随机补上的花色会和手填的配成对，不会把已经填好的改掉。</div>',
+      '<div id="mfSuitGrid" class="suit-grid"></div>',
+      '</div>',
+      '<div id="mfLockPanel" class="mf-panel" style="display:none">',
+      '<div class="mf-note">锁牌不能点，也看不到花色。只要场上有锁牌，其他牌里就会有正好 2 张钥匙花色。这两张可以是普通牌，也可以是一张普通一张暗牌，但不能是锁牌。两张钥匙都消去后，所有锁牌一起打开。</div>',
+      '<div class="mf-note">钥匙在「上色」里，画到锁牌以外的牌上。没画够 2 张时，生成会用空着的非锁牌补足。</div>',
+      '</div>',
+      '<div id="mfLeafPanel" class="mf-panel" style="display:none">',
+      '<div class="mf-note">打开后，凡是上面还有牌压着的，试玩里都盖成一堆树叶，花色一点不露。把上面的牌消去，下面的花色才出现。上面刚好没牌的，一开始就能看到。普通牌、暗牌、锁牌都会被盖住。</div>',
+      '<button class="sbtn block" id="mfLeafBtn" style="margin-top:8px" onclick="mfToggleLeaf()">盖上树叶</button>',
+      '</div>'
+    ].join(''));
+    const grid = document.getElementById('mfSuitGrid');
+    const ids = [];
+    for (let i = 1; i <= 34; i++) ids.push(i);
+    ids.push(MF.KEY_SUIT);
+    ids.forEach(function (id) {
+      const meta = mfSuitMeta(id);
+      const btn = document.createElement('div');
+      btn.className = 'suit-btn' + (id === MF.KEY_SUIT ? ' g-key' : '');
+      btn.style.color = meta.color;
+      btn.textContent = meta.label;
+      btn.title = meta.name;
+      btn.onclick = function () { mfSelectSuit(id, true); };
+      btn.dataset.suit = String(id);
+      grid.appendChild(btn);
+    });
+    mfSelectSuit(state.paintSuit, false);
+  }
+
+  const help = document.getElementById('helpPop');
+  if (help && !help.querySelector('[data-mf]')) {
+    help.insertAdjacentHTML('beforeend', [
+      '<div class="hrow" data-mf><span><kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></span><span>上色 / 锁牌 / 树叶</span></div>'
+    ].join(''));
+  }
+  mfSyncLeafButton();
+}
+
+function mfSyncLeafButton() {
+  const btn = document.getElementById('mfLeafBtn');
+  if (btn) btn.textContent = state.leafCover ? '拿掉树叶' : '盖上树叶';
+  const brush = document.querySelector('[data-brush="leaf"]');
+  if (brush) brush.classList.toggle('armed', !!state.leafCover);
+}
+
+function mfToggleLeaf() {
+  state.leafCover = !state.leafCover;
+  setBrush('leaf');
+  mfSyncLeafButton();
+  draw();
+  updateUI();
+  toast(state.leafCover ? '树叶已盖住所有被压住的牌' : '已去掉树叶', 'ok');
+}
+
+function mfSelectSuit(id, switchBrush) {
+  state.paintSuit = id;
+  document.querySelectorAll('#mfSuitGrid .suit-btn').forEach(function (btn) {
+    btn.classList.toggle('on', Number(btn.dataset.suit) === Number(id));
+  });
+  if (switchBrush && state.brush !== 'suit') setBrush('suit');
+}
+
+function mfFindTileKey(layer, row, col) {
+  if (!layer || !layer.tiles) return null;
+  const cell = row + ',' + col;
+  if (layer.tiles[cell]) return cell;
+  const keys = Object.keys(layer.tiles);
+  for (let i = 0; i < keys.length; i++) {
+    if (tileOccupiesCells(keys[i]).has(cell)) return keys[i];
+  }
+  return null;
+}
+
+function mfCountKeys(exceptKey) {
+  let n = 0;
+  state.layers.forEach(function (layer) {
+    Object.keys(layer.tiles || {}).forEach(function (key) {
+      if (key === exceptKey) return;
+      const t = layer.tiles[key];
+      if (t && t.type !== 'lock' && t.type !== 'spitter' && Number(t.typeId) === MF.KEY_SUIT) n++;
+    });
+  });
+  return n;
+}
+
+function mfPaintSuit(col, row) {
+  const layer = state.layers[state.currentLayer];
+  if (!layer) return;
+  const clear = state.paintMode === 'remove';
+  const spots = [[row, col]];
+  if (state.symmetric) spots.push([row, mirrorCol(col, state.currentLayer)]);
+  const seen = new Set();
+  let changed = false;
+  let blocked = '';
+  spots.forEach(function (spot) {
+    const k = mfFindTileKey(layer, spot[0], spot[1]);
+    if (!k || seen.has(k)) return;
+    seen.add(k);
+    const tile = layer.tiles[k];
+    if (!tile || tile.type === 'spitter' || tile.type === 'spitterQueue') return;
+    if (clear) {
+      if (tile.typeId != null) { tile.typeId = null; tile.manualSuit = false; changed = true; }
+      return;
+    }
+    if (tile.type === 'lock' && Number(state.paintSuit) === MF.KEY_SUIT) {
+      blocked = '锁牌不能画成钥匙';
+      return;
+    }
+    if (Number(state.paintSuit) === MF.KEY_SUIT && Number(tile.typeId) !== MF.KEY_SUIT && mfCountKeys() >= 2) {
+      blocked = '钥匙花色只能有 2 张';
+      return;
+    }
+    if (Number(tile.typeId) !== Number(state.paintSuit) || !tile.manualSuit) {
+      tile.typeId = state.paintSuit;
+      tile.manualSuit = true;
+      changed = true;
+    }
+  });
+  if (blocked) toast(blocked, 'err');
+  if (changed) { draw(); updateUI(); }
+}
+
+function mfKeepSuit(now, prev) {
+  if (!now || !prev || prev.typeId == null) return;
+  if (now.type === 'lock' && Number(prev.typeId) === MF.KEY_SUIT) return;
+  now.typeId = prev.typeId;
+  if (prev.manualSuit) now.manualSuit = true;
+}
+
+function mfPaintKeepSuit(col, row) {
+  const layer = state.layers[state.currentLayer];
+  const key = row + ',' + col;
+  const mcol = mirrorCol(col, state.currentLayer);
+  const mkey = row + ',' + mcol;
+  const prev = layer.tiles[key];
+  const mprev = (state.symmetric && mcol !== col) ? layer.tiles[mkey] : null;
+  _mfPaintAt(col, row);
+  mfKeepSuit(layer.tiles[key], prev);
+  if (state.symmetric && mcol !== col) mfKeepSuit(layer.tiles[mkey], mprev);
+  draw();
+  updateUI();
+}
+
+function mfEraseBroad(col, row) {
+  const layer = state.layers[state.currentLayer];
+  const key = row + ',' + col;
+  const tile = layer.tiles[key];
+  if (tile && tile.type === 'spitter') { _mfPaintAt(col, row); return; }
+  const mcol = mirrorCol(col, state.currentLayer);
+  const mkey = row + ',' + mcol;
+  delete layer.tiles[key];
+  if (state.symmetric && mcol !== col) {
+    const mType = layer.tiles[mkey] && layer.tiles[mkey].type;
+    if (mType === 'normal' || mType === 'dark' || mType === 'lock') delete layer.tiles[mkey];
+  }
+  draw();
+  updateUI();
+}
+
+function mfTileCovered(layerIdx, row, col) {
+  for (let i = layerIdx + 1; i < state.layers.length; i++) {
+    const tiles = state.layers[i].tiles || {};
+    const keys = Object.keys(tiles);
+    for (let k = 0; k < keys.length; k++) {
+      if (tiles[keys[k]].type === 'spitter') continue;
+      const parts = keys[k].split(',').map(Number);
+      if (Math.abs(parts[0] - row) < 2 && Math.abs(parts[1] - col) < 2) return true;
+    }
+  }
+  return false;
+}
+
+function mfPaintFace(col, row, layerIdx, tile, isHover) {
+  if (!tile || tile.type === 'spitter' || tile.type === 'spitterQueue') return;
+  const x = BOARD_PAD + (col + DISPLAY_OFFSET_COL) * CELL - layerIdx * 3;
+  const y = BOARD_PAD + worldTopPad() + (row + DISPLAY_OFFSET_ROW) * CELL - layerIdx * 3;
+  const w = TILE * CELL, h = TILE * CELL;
+  const meta = tile.typeId != null ? mfSuitMeta(tile.typeId) : null;
+  ctx.save();
+  if (isHover) ctx.globalAlpha = 0.55;
+  if (meta) {
+    ctx.fillStyle = 'rgba(255,252,245,0.94)';
+    ctx.fillRect(x + 7, y + 12, w - 14, h - 30);
+    ctx.fillStyle = meta.color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold ' + Math.round(CELL * 0.34) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(meta.label, x + w / 2, y + h / 2 - 2);
+  } else if (tile.type === 'lock') {
+    ctx.fillStyle = 'rgba(90,60,20,0.55)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = Math.round(CELL * 0.28) + 'px sans-serif';
+    ctx.fillText('未上色', x + w / 2, y + h / 2);
+  }
+  const badge = tile.type === 'lock' ? '锁' : tile.type === 'dark' ? '暗' : '';
+  if (badge) {
+    ctx.fillStyle = tile.type === 'lock' ? '#8a5a12' : '#31427a';
+    ctx.beginPath();
+    ctx.arc(x + w - 16, y + 16, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badge, x + w - 16, y + 16);
+  }
+  if (state.leafCover && mfTileCovered(layerIdx, row, col)) {
+    ctx.fillStyle = '#2f7d32';
+    ctx.beginPath();
+    ctx.arc(x + 16, y + 16, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('叶', x + 16, y + 16);
+  }
+  ctx.restore();
+}
+
+function mfEachTile(fn) {
+  state.layers.forEach(function (layer, layerIdx) {
+    Object.keys(layer.tiles || {}).forEach(function (key) {
+      const parts = key.split(',').map(Number);
+      fn(layer.tiles[key], layerIdx, parts[0], parts[1], key);
+    });
+  });
+}
+
+(function wrapGenerators() {
+  const fill = GEN.fillEditorShape;
+  GEN.fillEditorShape = function (tiles, special, options) {
+    const opt = Object.assign({}, options || {});
+    if (opt.leafCover == null) opt.leafCover = !!state.leafCover;
+    return fill(tiles, special, opt);
+  };
+  const stack = GEN.generateStackFromShape;
+  GEN.generateStackFromShape = function (tiles, options) {
+    const opt = Object.assign({}, options || {});
+    if (opt.leafCover == null) opt.leafCover = !!state.leafCover;
+    return stack(tiles, opt);
+  };
+})();
+
+mfInstallUI();
+
+const _mfSetBrush = setBrush;
+setBrush = function (brush) {
+  _mfSetBrush(brush);
+  const suitPanel = document.getElementById('mfSuitPanel');
+  const lockPanel = document.getElementById('mfLockPanel');
+  const leafPanel = document.getElementById('mfLeafPanel');
+  if (suitPanel) suitPanel.style.display = brush === 'suit' ? 'block' : 'none';
+  if (lockPanel) lockPanel.style.display = brush === 'lock' ? 'block' : 'none';
+  if (leafPanel) leafPanel.style.display = brush === 'leaf' ? 'block' : 'none';
+  mfSyncLeafButton();
+};
+
+const _mfPaintAt = paintAt;
+paintAt = function (col, row) {
+  if (state.brush === 'suit') { mfPaintSuit(col, row); return; }
+  if (state.brush === 'leaf') return;
+  if (state.brush === 'spitter' || state.brush === 'disc' || state.brush === 'rotation') {
+    _mfPaintAt(col, row);
+    return;
+  }
+  if (state.paintMode === 'add' && (state.brush === 'normal' || state.brush === 'dark' || state.brush === 'lock')) {
+    mfPaintKeepSuit(col, row);
+    return;
+  }
+  if (state.paintMode !== 'add') { mfEraseBroad(col, row); return; }
+  _mfPaintAt(col, row);
+};
+
+const _mfDrawTile = drawTile;
+drawTile = function (col, row, layerIdx, tile, isCurrent, isHover, isIssue) {
+  _mfDrawTile(col, row, layerIdx, tile, isCurrent, isHover, isIssue);
+  mfPaintFace(col, row, layerIdx, tile, isHover);
+};
+
+const _mfUpdateStatusbar = updateStatusbar;
+updateStatusbar = function () {
+  _mfUpdateStatusbar();
+  let n = 0, d = 0, s = 0, lock = 0, painted = 0, playable = 0, keys = 0;
+  mfEachTile(function (t) {
+    if (t.type === 'normal') n++;
+    else if (t.type === 'dark') d++;
+    else if (t.type === 'spitter') s++;
+    else if (t.type === 'lock') lock++;
+    if (t.type !== 'spitter' && t.type !== 'spitterQueue') {
+      playable++;
+      if (t.manualSuit && t.typeId != null) painted++;
+      if (t.type !== 'lock' && Number(t.typeId) === MF.KEY_SUIT) keys++;
+    }
+  });
+  const el = document.getElementById('sbCounts');
+  if (el) {
+    el.innerHTML = '普通 <b>' + n + '</b> · 暗 <b>' + d + '</b> · 锁 <b>' + lock + '</b> · 钥匙 <b>' + keys + '</b> · 吐 <b>' + s + '</b> · 已上色 <b>' + painted + '/' + playable + '</b>' + (state.leafCover ? ' · <b>树叶</b>' : '');
+  }
+};
+
+const _mfLoadFromEditorJSON = loadFromEditorJSON;
+loadFromEditorJSON = function (json) {
+  _mfLoadFromEditorJSON(json);
+  state.leafCover = !!(json && json.leafCover);
+  const keepAll = !!(json && json.manualSuits);
+  const specials = {};
+  (json.specialTiles || []).forEach(function (sp) {
+    specials[sp.layer + ',' + sp.row + ',' + sp.col] = sp;
+  });
+  (json.tiles || []).forEach(function (t) {
+    if (t.spitterOrder != null || t.type === 'spitter') return;
+    const layer = state.layers[t.layer];
+    if (!layer || !layer.tiles) return;
+    const tile = layer.tiles[t.row + ',' + t.col];
+    if (!tile || tile.type === 'spitter' || tile.type === 'spitterQueue') return;
+    const sp = specials[t.layer + ',' + t.row + ',' + t.col];
+    const kind = (sp && sp.type) || t.type;
+    if (kind === 'lock' || t.isLock) tile.type = 'lock';
+    else if (t.isDark || kind === 'dark') tile.type = 'dark';
+    if (t.typeId != null && (keepAll || t.manualSuit)) {
+      tile.typeId = t.typeId;
+      tile.manualSuit = true;
+    }
+  });
+  mfSyncLeafButton();
+  draw();
+  updateUI();
+};
+
+const _mfSetPreviewStats = setPreviewStats;
+setPreviewStats = function (level, darkCount) {
+  if (!level) return;
+  _mfSetPreviewStats(level, darkCount);
+  const locks = (level.tiles || []).filter(function (t) { return t.isLock || t.type === 'lock'; }).length;
+  const box = document.getElementById('previewStats');
+  if (!box || (!level.manualSuits && !locks && !level.leafCover)) return;
+  const extra = [];
+  if (level.manualSuits) extra.push('<span class="good">含手填花色</span>');
+  if (locks) extra.push('<span>锁牌 ' + locks + '</span>');
+  if (level.leafCover) extra.push('<span>树叶</span>');
+  box.insertAdjacentHTML('beforeend', extra.join(''));
+};
+
+sendLevelToPreview = function (level) {
+  if (!demoAvailable) {
+    toast('本地没有游戏 Demo，仅生成不预览（下载 JSON 不受影响）', 'err');
+    return;
+  }
+  const iframe = document.getElementById('previewFrame');
+  if (!previewFrameReady) {
+    pendingLevel = level;
+    return;
+  }
+  pendingLevel = null;
+  const clean = {
+    levelId: level.levelId,
+    totalPairs: level.totalPairs,
+    tiles: level.tiles,
+    specialTiles: level.specialTiles,
+    rotation: level.rotation || null,
+    discs: level.discs || state.discs || [],
+    manualSuits: !!level.manualSuits,
+    leafCover: !!level.leafCover
+  };
+  if (clean.rotation) {
+    document.getElementById('rotCenterRow').value = clean.rotation.centerRow;
+    document.getElementById('rotCenterCol').value = clean.rotation.centerCol;
+    document.getElementById('rotRadius').value = clean.rotation.radius;
+    setRotationDir(clean.rotation.direction || 'clockwise');
+    setBrush('rotation');
+    state.sentRotation = Object.assign({}, clean.rotation);
+  } else {
+    state.sentRotation = null;
+  }
+  document.getElementById('previewPlaceholder').classList.add('hidden');
+  iframe.contentWindow.postMessage({ type: 'loadLevel', level: clean }, '*');
+  clearTimeout(previewAckTimer);
+  previewAckTimer = setTimeout(function () {
+    if (location.protocol === 'file:') showDemoMissing();
+  }, 8000);
+};
+
+window.addEventListener('keydown', function (e) {
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (e.key === '4') setBrush('suit');
+  if (e.key === '5') setBrush('lock');
+  if (e.key === '6') setBrush('leaf');
+});
+
+window.mfToggleLeaf = mfToggleLeaf;
+window.mfSelectSuit = mfSelectSuit;
 
 init();
 initPreview();
