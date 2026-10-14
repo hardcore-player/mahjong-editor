@@ -774,6 +774,12 @@
         <button class="sbtn" style="padding:4px 10px; font-size:11px;" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强刷</button>
       </div>
       <div class="gh-item">
+        <div class="gh-title">v4.12.2 · 2026-10-14</div>
+        <div class="gh-desc">
+          • 自己上的花色只要总张数和每种花色都是双数，就直接生成并可以试玩。不再因为搜索不到消除顺序而拒绝生成。
+        </div>
+      </div>
+      <div class="gh-item">
         <div class="gh-title">v4.12.1 · 2026-10-14</div>
         <div class="gh-desc">
           • 修复编辑器一打开脚本就中断，右侧试玩预览不出来。按当前形状生成后可以重新试玩。
@@ -1487,7 +1493,7 @@
 </div>
 
 <script src="manual-rules.js"></script>
-<script src="generator.js?v=483"></script>
+<script src="generator.js?v=484"></script>
 <script>
 // ========== 配置：编辑器坐标显示范围 ==========
 // 横向固定 12 个子格 = 6 个麻将位（每张牌占 2 子格）
@@ -3256,7 +3262,7 @@ function buildEditorShape() {
 }
 
 // ========== 版本检测：发现新版本时提示强刷 ==========
-window.APP_VERSION = 'v4.12.1'; // 部署时同步更新，与 version.json 一致
+window.APP_VERSION = 'v4.12.2'; // 部署时同步更新，与 version.json 一致
 let versionCheckTimer = null;
 let versionBannerShown = false;
 function checkNewVersion() {
