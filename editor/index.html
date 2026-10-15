@@ -774,6 +774,12 @@
         <button class="sbtn" style="padding:4px 10px; font-size:11px;" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强刷</button>
       </div>
       <div class="gh-item">
+        <div class="gh-title">v4.12.3 · 2026-10-15</div>
+        <div class="gh-desc">
+          • 吐牌机出牌口上的堵口牌会留在牌口。点走这张牌之后，队列第一张才出来。被盖住或左右夹住的堵口牌不能直接点。
+        </div>
+      </div>
+      <div class="gh-item">
         <div class="gh-title">v4.12.2 · 2026-10-14</div>
         <div class="gh-desc">
           • 自己上的花色只要总张数和每种花色都是双数，就直接生成并可以试玩。不再因为搜索不到消除顺序而拒绝生成。
@@ -3262,7 +3268,7 @@ function buildEditorShape() {
 }
 
 // ========== 版本检测：发现新版本时提示强刷 ==========
-window.APP_VERSION = 'v4.12.2'; // 部署时同步更新，与 version.json 一致
+window.APP_VERSION = 'v4.12.3'; // 部署时同步更新，与 version.json 一致
 let versionCheckTimer = null;
 let versionBannerShown = false;
 function checkNewVersion() {

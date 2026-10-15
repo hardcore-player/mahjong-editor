@@ -374,28 +374,39 @@ function lockBaseBounds() {
 }
 
 function getActiveTiles() {
-  // 队列牌机制:仅显示 spitterOrder === 已释放数 + 1(下一张可点)
-  // 例如:released=0 时只显示 spitterOrder=1,点击消除后 released=1,显示 spitterOrder=2 ...
-  // 全部释放完后,spitter 本体进入 exhausted,所有队列牌已消除
+  // 出牌口上若还有一张不属于队列的牌，它就是堵口牌，必须先离开牌口。
+  // 堵口牌还在棋盘上时，整队队列牌都不出现。
+  // 堵口牌进卡槽或被消掉之后，才显示 spitterOrder === 已释放数 + 1。
   const spitters = tiles.filter(t => t.type === 'spitter');
   const activeSpitterIds = new Set(spitters.filter(s => !spitterExhaustedIds.has(s.id)).map(s => s.id));
   const activeQueueIds = new Set();
-  // 收集所有 spitter target 位置(用于隐藏 target 位置的普通牌——避免与队列牌视觉重叠)
   const targetKeys = new Set();
+  const pluggedKeys = new Set();
   for (const s of spitters) {
-    if (spitterExhaustedIds.has(s.id)) continue; // 队列用尽后,target 普通牌正常显示
+    if (spitterExhaustedIds.has(s.id)) continue;
     const tgt = spitterTargetPos(s);
-    if (tgt) targetKeys.add(`${tgt.layer},${tgt.row},${tgt.col}`);
+    if (!tgt) continue;
+    const key = `${tgt.layer},${tgt.row},${tgt.col}`;
+    targetKeys.add(key);
+    const plugged = tiles.some(t =>
+      t.spitterOrder == null &&
+      t.type !== 'spitter' &&
+      !matchedTileIds.has(t.id) &&
+      !slotTileIds.has(t.id) &&
+      t.layer === tgt.layer && t.row === tgt.row && t.col === tgt.col
+    );
+    if (plugged) pluggedKeys.add(key);
   }
   for (const t of tiles) {
     if (t.spitterOrder == null) continue;
     const owner = spitters.find(s => {
       const tgt = spitterTargetPos(s);
-      return tgt && tgt.row === t.row && tgt.col === t.col;
+      return tgt && tgt.layer === t.layer && tgt.row === t.row && tgt.col === t.col;
     });
     if (!owner || spitterExhaustedIds.has(owner.id)) continue;
+    const tgt = spitterTargetPos(owner);
+    if (pluggedKeys.has(`${tgt.layer},${tgt.row},${tgt.col}`)) continue;
     const released = spitterReleasedCount.get(owner.id) ?? 0;
-    // 显示下一张可点的队列牌(spitterOrder === released + 1)
     if (t.spitterOrder === released + 1) activeQueueIds.add(t.id);
   }
   return tiles.filter(t =>
@@ -404,7 +415,7 @@ function getActiveTiles() {
     !spitterExhaustedIds.has(t.id) &&
     !(t.type === 'spitter' && !activeSpitterIds.has(t.id)) &&
     !(t.spitterOrder != null && !activeQueueIds.has(t.id)) &&
-    !(t.spitterOrder == null && targetKeys.has(`${t.layer},${t.row},${t.col}`))
+    !(t.spitterOrder == null && t.type !== 'spitter' && targetKeys.has(`${t.layer},${t.row},${t.col}`) && !pluggedKeys.has(`${t.layer},${t.row},${t.col}`))
   );
 }
 
@@ -882,17 +893,8 @@ function clickTile(id) {
   if (!tile) return;
   // 吐牌机本体：不可点，抖动提示（队列用尽后已 exhausted 排除在 active 外，自动不响应）
   if (tile.type === 'spitter') { showHint(id); return; }
-  // spitter 关联的 target 牌即使被队列牌压,也算可点(让玩家进卡槽配对)
-  if (!isClickable(tile, active)) {
-    if (tile.spitterOrder == null) {
-      const sp = tiles.find(s => s.type === 'spitter' && !spitterExhaustedIds.has(s.id));
-      const isTarget = sp && (function(){
-        const tgt = spitterTargetPos(sp);
-        return tgt && tgt.row === tile.row && tgt.col === tile.col;
-      })();
-      if (!isTarget) { showHint(id); return; }
-    } else { showHint(id); return; }
-  }
+  // 堵口牌和队列牌都按普通牌判断：被盖住或左右夹住就不能点
+  if (!isClickable(tile, active)) { showHint(id); return; }
   // 队列牌：走普通进卡槽+配对消除流程(checkMatch 配对后触发 release 下一张)
   // 不进 matchedTileIds(由 checkMatch 在配对消除时处理)
 
@@ -1009,7 +1011,7 @@ function placeInSlot(tile, onDone) {
     const allSpitters = tiles.filter(s => s.type === 'spitter' && !spitterExhaustedIds.has(s.id));
     for (const owner of allSpitters) {
       const tgt = spitterTargetPos(owner);
-      if (tgt && tgt.row === tile.row && tgt.col === tile.col) {
+      if (tgt && tgt.layer === tile.layer && tgt.row === tile.row && tgt.col === tile.col) {
         const oldReleased = spitterReleasedCount.get(owner.id) ?? 0;
         const newReleased = oldReleased + 1;
         spitterReleasedCount.set(owner.id, newReleased);
@@ -1022,6 +1024,7 @@ function placeInSlot(tile, onDone) {
           const nextOrder = newReleased + 1;
           const queueTile = tiles.find(t =>
             t.spitterOrder === nextOrder &&
+            t.layer === tgt.layer &&
             t.row === tgt.row &&
             t.col === tgt.col
           );
@@ -1032,6 +1035,25 @@ function placeInSlot(tile, onDone) {
         }
         break;
       }
+    }
+  } else if (tile.type !== 'spitter') {
+    // 堵口牌离开出牌口：队列第一张这才出来
+    const allSpitters = tiles.filter(s => s.type === 'spitter' && !spitterExhaustedIds.has(s.id));
+    for (const owner of allSpitters) {
+      const tgt = spitterTargetPos(owner);
+      if (!tgt || tgt.layer !== tile.layer || tgt.row !== tile.row || tgt.col !== tile.col) continue;
+      const released = spitterReleasedCount.get(owner.id) ?? 0;
+      const queueTile = tiles.find(t =>
+        t.spitterOrder === released + 1 &&
+        t.layer === tgt.layer &&
+        t.row === tgt.row &&
+        t.col === tgt.col
+      );
+      if (queueTile) {
+        spitterRevealedIds.add(queueTile.id);
+        spitterRevealedDirs.set(queueTile.id, owner.dir);
+      }
+      break;
     }
   }
   // 旋转机制：被点击牌先飞入卡槽，其他牌播放旋转动画
