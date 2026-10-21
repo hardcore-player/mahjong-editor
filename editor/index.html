@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>麻将关卡编辑器 v4.0 · std 坐标（row=上下/纵, col=左右/横）</title>
+<title>每日挑战关卡编辑器 · std 坐标（row=上下/纵, col=左右/横）</title>
 <style>
   /* ===== 设计令牌（与批量工具页同源） ===== */
   :root {
@@ -515,7 +515,7 @@
 
 <!-- ============ 顶栏 ============ -->
 <header class="topbar">
-  <div class="brand">🀄 关卡编辑器<span class="ver">v4.0 · std 坐标</span></div>
+  <div class="brand">🀄 每日挑战关卡编辑器<span class="ver">难关 · std 坐标</span></div>
   <div class="tb-group">
     <button class="tbtn" onclick="document.getElementById('fileInput').click()">📂 导入</button>
     <input type="file" id="fileInput" accept=".json" onchange="importJSON(event)">
@@ -774,36 +774,11 @@
         <button class="sbtn" style="padding:4px 10px; font-size:11px;" onclick="location.reload(true)" title="强制刷新页面(Ctrl+Shift+R)">🔄 强刷</button>
       </div>
       <div class="gh-item">
-        <div class="gh-title">v4.12.3 · 2026-10-15</div>
-        <div class="gh-desc">
-          • 吐牌机出牌口上的堵口牌会留在牌口。点走这张牌之后，队列第一张才出来。被盖住或左右夹住的堵口牌不能直接点。
-        </div>
-      </div>
-      <div class="gh-item">
-        <div class="gh-title">v4.12.2 · 2026-10-14</div>
-        <div class="gh-desc">
-          • 自己上的花色只要总张数和每种花色都是双数，就直接生成并可以试玩。不再因为搜索不到消除顺序而拒绝生成。
-        </div>
-      </div>
-      <div class="gh-item">
-        <div class="gh-title">v4.12.1 · 2026-10-14</div>
-        <div class="gh-desc">
-          • 修复编辑器一打开脚本就中断，右侧试玩预览不出来。按当前形状生成后可以重新试玩。
-        </div>
-      </div>
-      <div class="gh-item">
-        <div class="gh-title">v4.12.0 · 2026-10-14</div>
-        <div class="gh-desc">
-          • 吐牌器：用「上色」点中一台吐牌器，可以给里面每一张指定花色。第 1 张先吐出。没填的仍随机补，不会改掉填过的。<br>
-          • 树叶：按层盖。点中的层里，上面还有牌压着的牌显示树叶，上面消去后才看得到花色。没点的层保持原样。
-        </div>
-      </div>
-      <div class="gh-item">
         <div class="gh-title">v4.11.0 · 2026-10-13</div>
         <div class="gh-desc">
           • 手填花色：用「上色」指定一部分牌的花色。生成时这些牌保持原花色，没填的仍按原来的随机规则补齐，两边花色会配成对。<br>
           • 锁牌：新画笔。锁牌不能点开，也看不到花色。场上只要有锁牌，其他牌里就会有正好 2 张钥匙花色（可以是普通牌或暗牌，不能是锁牌）。这两张消去后，所有锁牌一起打开。<br>
-          • 树叶：打开后，上面还有牌压着的牌全部盖成树叶。压着的牌消去后才看得到花色。普通牌、暗牌、锁牌都会被盖住。
+          • 树叶：按层盖。点中的层里，上面还有牌压着的牌显示树叶，上面消去后才看得到花色。没点的层保持原样。
         </div>
       </div>
       <div class="gh-item">
@@ -1499,7 +1474,7 @@
 </div>
 
 <script src="manual-rules.js"></script>
-<script src="generator.js?v=484"></script>
+<script src="generator.js?v=539"></script>
 <script>
 // ========== 配置：编辑器坐标显示范围 ==========
 // 横向固定 12 个子格 = 6 个麻将位（每张牌占 2 子格）
@@ -3051,6 +3026,7 @@ function exportJSON() {
     totalPairs: Math.floor(tiles.length / 2),
     tiles, specialTiles,
     discs: state.discs.map(d => ({ id: d.id, gapLayer: d.gapLayer, row: d.row, col: d.col })),
+    solution: null
   };
 
   const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
@@ -3268,7 +3244,7 @@ function buildEditorShape() {
 }
 
 // ========== 版本检测：发现新版本时提示强刷 ==========
-window.APP_VERSION = 'v4.12.3'; // 部署时同步更新，与 version.json 一致
+window.APP_VERSION = 'v4.13.0-daily'; // 每日挑战分支；与 version.json 一致
 let versionCheckTimer = null;
 let versionBannerShown = false;
 function checkNewVersion() {
@@ -3322,6 +3298,8 @@ let demoAvailable = true;
 let previewAckTimer = null;
 let previewTimerStart = 0;   // 试玩计时开始时间（ms），0 表示未在计时
 let previewTimerInterval = null;
+let playAttempt = 0;
+let playBase = null;
 
 // 实时计时器：mm:ss 格式
 function fmtTime(ms) {
@@ -3364,7 +3342,7 @@ function stopPreviewTimer() {
 // file:// 直开时按仓库布局（工具包与 游戏Demo 同级）取相对路径
 function getDemoUrl() {
   if (location.protocol === 'file:') return '../游戏Demo/game_demo_std.html';
-  return '/demo/index.html';
+  return '/demo/index.html?v=520';
 }
 
 function showDemoMissing() {
@@ -3397,6 +3375,8 @@ async function initPreview() {
         setGenStatus(`已通关 · 本局 ${fmtTime(e.data.durationMs)} · 最佳 ${fmtTime(best)} · 难度 ${currentLevel._difficulty?.score ?? '?'} 分`);
         renderPlayHistory();
       }
+    } else if (e.data.type === 'previewRestart') {
+      onPreviewRestart();
     }
   });
   // http 模式先探测 demo 是否存在，避免 iframe 里挂 404
@@ -4512,7 +4492,24 @@ setPreviewStats = function (level, darkCount) {
   box.insertAdjacentHTML('beforeend', extra.join(''));
 };
 
-sendLevelToPreview = function (level) {
+function playRhythmLabel() {
+  return '花色已随机：开局好消，后面要靠卡槽博弈，难度不变';
+}
+function clonePlayLevel(level) {
+  return {
+    levelId: level.levelId,
+    totalPairs: level.totalPairs,
+    tiles: (level.tiles || []).map(function (t) { return Object.assign({}, t); }),
+    specialTiles: (level.specialTiles || []).map(function (s) { return Object.assign({}, s); }),
+    rotation: level.rotation || null,
+    discs: level.discs || [],
+    manualSuits: !!level.manualSuits,
+    leafCover: !!level.leafCover,
+    leafLayers: Array.isArray(level.leafLayers) ? level.leafLayers.slice() : null,
+    _difficulty: level._difficulty
+  };
+}
+function deliverPreview(level) {
   if (!demoAvailable) {
     toast('本地没有游戏 Demo，仅生成不预览（下载 JSON 不受影响）', 'err');
     return;
@@ -4550,6 +4547,39 @@ sendLevelToPreview = function (level) {
   previewAckTimer = setTimeout(function () {
     if (location.protocol === 'file:') showDemoMissing();
   }, 8000);
+  const score = level._difficulty && level._difficulty.score;
+  setGenStatus(playRhythmLabel() + (score != null ? ' · ' + score + '分' : '') + (level.solution && level.solution.steps ? ' · 通关路径 ' + level.solution.steps.length + ' 步' : ' · 未找到通关路径'));
+}
+function onPreviewRestart() {
+  const base = playBase || (currentLevel ? clonePlayLevel(currentLevel) : null);
+  if (!base) return;
+  playBase = base;
+  const rng = GEN.makeRng((Date.now() ^ 0x51f15e) >>> 0);
+  const played = GEN.reshufflePlayLevel(playBase, 1, rng);
+  if (!played || !played.solution) {
+    setGenStatus('重开洗牌失败，没有得到成对且验证过的关卡，请再点一次重来');
+    return;
+  }
+  currentLevel = played;
+  showPreview();
+  deliverPreview(played);
+}
+sendLevelToPreview = function (level) {
+  playAttempt = 0;
+  playBase = clonePlayLevel(level);
+  const rng = GEN.makeRng((Date.now() ^ 0x9e3779b9) >>> 0);
+  const played = GEN.reshufflePlayLevel(playBase, 1, rng);
+  if (!played || !played.solution) {
+    setGenStatus('洗牌失败，没有得到成对且验证过的通关路径');
+    return;
+  }
+  const srcIdx = (typeof resultsList !== 'undefined') ? resultsList.indexOf(level) : -1;
+  if (srcIdx >= 0) {
+    resultsList[srcIdx] = played;
+    if (typeof renderResults === 'function') renderResults();
+  }
+  currentLevel = played;
+  deliverPreview(played);
 };
 
 window.addEventListener('keydown', function (e) {

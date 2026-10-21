@@ -450,10 +450,367 @@ function covers(a, b) {
   return a.layer > b.layer && Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
 }
 
-// ============ 倒推填色 ============
+// ============ 节奏填色 ============
+// 先沿自然翻牌把大约两成的牌配成同时能消的对，开局连着消。
+// 到这一步时，场上只留一种能消的花色当诱饵，其余能点的牌都是新花色的单张。
+// 只消对子会把诱饵消掉，然后被盖住的两张同花色永远凑不齐。
+// 要过关，得先把那张不成对的关键牌放进卡槽。
+function paceNote(tag) {
+  (globalThis.__paceWhy = globalThis.__paceWhy || []).push(tag);
+}
+function pacedFill(tiles, rng) {
+  const n = tiles.length;
+  if (n < 8 || n % 2) { paceNote('tiny'); return null; }
+  const items = tiles.map(function (t, idx) {
+    return {
+      layer: t.layer, row: t.row, col: t.col, _idx: idx,
+      spitterOrder: t.spitterOrder == null ? null : t.spitterOrder
+    };
+  });
+  function cellKey(t) { return t.layer + ',' + t.row + ',' + t.col; }
+  function posKey(t) { return t.row + ',' + t.col; }
+  function visibleOf(list) {
+    const plain = [];
+    const queues = new Map();
+    list.forEach(function (t) {
+      if (t.spitterOrder == null) plain.push(t);
+      else {
+        const k = cellKey(t);
+        if (!queues.has(k)) queues.set(k, []);
+        queues.get(k).push(t);
+      }
+    });
+    const occ = new Set(plain.map(cellKey));
+    const out = plain.slice();
+    queues.forEach(function (arr, k) {
+      if (occ.has(k)) return;
+      arr.sort(function (a, b) { return a.spitterOrder - b.spitterOrder; });
+      out.push(arr[0]);
+    });
+    return out;
+  }
+  function clickableIn(set) {
+    const vis = visibleOf(items.filter(function (t) { return set.has(t._idx); }));
+    return vis.filter(function (t) { return isClickable(t, vis); });
+  }
+  function freshFrom(counts, avoid) {
+    for (let pass = 0; pass < 2; pass++) {
+      for (let s = 1; s <= TYPE_COUNT; s++) {
+        const c = counts[s] || 0;
+        if (c >= 3) continue;
+        if (avoid && avoid[s]) continue;
+        if (pass === 0 && c) continue;
+        counts[s] = c + 1;
+        return s;
+      }
+    }
+    return 0;
+  }
+  // 开场尽量重复已经出现过的花色，把新花色留到中段的诱饵。
+  function freshReuse(counts, avoid) {
+    for (let pass = 0; pass < 2; pass++) {
+      for (let s = 1; s <= TYPE_COUNT; s++) {
+        const c = counts[s] || 0;
+        if (c >= 3) continue;
+        if (avoid && avoid[s]) continue;
+        if (pass === 0 && !c) continue;
+        if (pass === 1 && c) continue;
+        counts[s] = c + 1;
+        return s;
+      }
+    }
+    return 0;
+  }
+  function belowOf(set, t) {
+    return items.filter(function (j) {
+      return set.has(j._idx) && j.spitterOrder == null && j.row === t.row && j.col === t.col && j.layer < t.layer;
+    }).sort(function (a, b) { return b.layer - a.layer; });
+  }
+
+  const counts0 = {};
+  const suit0 = {};
+  let rem0 = new Set(items.map(function (t) { return t._idx; }));
+  let guard = 0;
+  while (guard++ < n) {
+    const free = clickableIn(rem0);
+    if (free.length < 4) break;
+    const wave = Math.floor(free.length / 2);
+    const removed = n - rem0.size;
+    const next = removed + wave * 2;
+    if (removed / n >= 0.18) break;
+    if (next / n > 0.28 && removed / n >= 0.12) break;
+    shuffle(free, rng);
+    const waveAvoid = {};
+    for (let k = 0; k < wave; k++) {
+      const s = freshReuse(counts0, waveAvoid);
+      if (!s) { paceNote('fresh'); return null; }
+      waveAvoid[s] = 1;
+      suit0[free[2 * k]._idx] = suit0[free[2 * k + 1]._idx] = s;
+      rem0.delete(free[2 * k]._idx);
+      rem0.delete(free[2 * k + 1]._idx);
+    }
+  }
+  if (n - rem0.size < 4) { paceNote('short' + (n - rem0.size)); return null; }
+
+  function freedBy(set, cover, target) {
+    if (!cover || !target || !set.has(cover._idx) || !set.has(target._idx) || cover._idx === target._idx) return false;
+    const next = new Set(set);
+    next.delete(cover._idx);
+    return clickableIn(next).some(function (t) { return t._idx === target._idx; });
+  }
+  function chainOk(set, Q, C, D, P) {
+    if (!Q || !C || !D || !P) return false;
+    const s1 = new Set(set);
+    s1.delete(Q._idx);
+    if (!clickableIn(s1).some(function (t) { return t._idx === C._idx; })) return false;
+    s1.delete(C._idx);
+    if (!clickableIn(s1).some(function (t) { return t._idx === D._idx; })) return false;
+    s1.delete(D._idx);
+    return clickableIn(s1).some(function (t) { return t._idx === P._idx; });
+  }
+  function deferrable(set, t) {
+    const below = belowOf(set, t)[0];
+    return !!(below && freedBy(set, t, below));
+  }
+
+  // 把「点掉也救不出同伴」的明牌继续成对消掉。消不动时，改挖一张能救出同伴的牌，换一层几何。
+  let guardR = 0;
+  let stall = 0;
+  let prevExtra = 999;
+  while (guardR++ < n && (n - rem0.size) / n < 0.58) {
+    const free = clickableIn(rem0);
+    const keep = new Set();
+    const qIds = new Set();
+    free.forEach(function (t) {
+      const u = belowOf(rem0, t);
+      if (u.length >= 3 && chainOk(rem0, t, u[0], u[1], u[2])) { keep.add(t._idx); qIds.add(t._idx); }
+      if (deferrable(rem0, t)) keep.add(t._idx);
+    });
+    if (!qIds.size) break;
+    const extras = free.filter(function (t) { return !keep.has(t._idx); });
+    if (extras.length >= prevExtra) stall++; else stall = 0;
+    prevExtra = extras.length;
+    let pair = null;
+    if (extras.length >= 2 && stall > 8) {
+      const buddy = free.find(function (t) { return keep.has(t._idx) && !qIds.has(t._idx); });
+      shuffle(extras, rng);
+      pair = buddy ? [extras[0], buddy] : [extras[0], extras[1]];
+    } else if (extras.length >= 2) {
+      shuffle(extras, rng);
+      pair = [extras[0], extras[1]];
+    } else if (extras.length === 1) {
+      const buddy = free.find(function (t) { return t !== extras[0] && !qIds.has(t._idx); });
+      if (buddy) pair = [extras[0], buddy];
+    }
+    if (!pair) break;
+    const s = freshReuse(counts0);
+    if (!s) break;
+    suit0[pair[0]._idx] = suit0[pair[1]._idx] = s;
+    rem0.delete(pair[0]._idx);
+    rem0.delete(pair[1]._idx);
+  }
+
+  const freeNow = clickableIn(rem0);
+  const qCands = freeNow.filter(function (t) {
+    if (t.spitterOrder != null) return false;
+    const u = belowOf(rem0, t);
+    return u.length >= 3 && chainOk(rem0, t, u[0], u[1], u[2]);
+  });
+  shuffle(qCands, rng);
+
+  function attempt(Q, C, D, P, A, B) {
+    const prot = new Set([Q, C, D, P, A, B].map(function (t) { return t._idx; }));
+    if (prot.size < 6) { paceNote('overlap'); return null; }
+    const rem = new Set(rem0);
+    const suit = Object.assign({}, suit0);
+    const counts = Object.assign({}, counts0);
+    function fresh() { return freshFrom(counts); }
+    const bait = fresh();
+    const key = fresh();
+    if (!bait || !key) { paceNote('nokey'); return null; }
+    counts[bait] = 3;
+    counts[key] = 3;
+    if ([A, B, C, D, Q, P].some(function (t) { return suit[t._idx]; })) { paceNote('painted'); return null; }
+    suit[A._idx] = suit[B._idx] = suit[C._idx] = suit[D._idx] = bait;
+    suit[Q._idx] = suit[P._idx] = key;
+    const avoid = {};
+    freeNow.forEach(function (t) { if (suit[t._idx]) avoid[suit[t._idx]] = 1; });
+    const fset = new Set(freeNow.map(function (t) { return t._idx; }));
+    const taken = new Set();
+    let deferOk = true;
+    freeNow.forEach(function (t) {
+      if (!deferOk || suit[t._idx] || prot.has(t._idx)) return;
+      let partner = null;
+      const below = belowOf(rem, t).filter(function (j) {
+        return !suit[j._idx] && !prot.has(j._idx) && !taken.has(j._idx);
+      })[0];
+      if (below && freedBy(rem, t, below)) partner = below;
+      if (!partner) {
+        partner = items.find(function (j) {
+          return rem.has(j._idx) && !suit[j._idx] && !prot.has(j._idx) && !fset.has(j._idx) && !taken.has(j._idx) && freedBy(rem, t, j);
+        });
+      }
+      if (!partner) { deferOk = false; paceNote('defer-mate'); return; }
+      const s = freshFrom(counts, avoid);
+      if (!s) { deferOk = false; paceNote('defer-suit'); return; }
+      suit[t._idx] = suit[partner._idx] = s;
+      avoid[s] = 1;
+      taken.add(partner._idx);
+    });
+    if (!deferOk) { paceNote('defer'); return null; }
+
+    function matchCount(set) {
+      const by = {};
+      clickableIn(set).forEach(function (t) {
+        const s = suit[t._idx];
+        if (!s) return;
+        by[s] = (by[s] || 0) + 1;
+      });
+      let m = 0;
+      Object.keys(by).forEach(function (k) { if (by[k] >= 2) m++; });
+      return m;
+    }
+    if (matchCount(rem) !== 1) { paceNote('match'+matchCount(rem)); return null; }
+    const decision = new Set(rem);
+    const slots = [];
+    const rem2 = new Set(rem);
+    function play(idx) {
+      if (!rem2.has(idx)) return false;
+      if (!clickableIn(rem2).some(function (t) { return t._idx === idx; })) return false;
+      const s = suit[idx];
+      const at = slots.indexOf(s);
+      if (at >= 0) slots.splice(at, 1);
+      else if (slots.length >= 4) return false;
+      else slots.push(s);
+      rem2.delete(idx);
+      return true;
+    }
+    if (!play(Q._idx) || !play(A._idx) || !play(C._idx) || !play(B._idx) || !play(D._idx) || !play(P._idx)) {
+      paceNote('play');
+      return null;
+    }
+    if (slots.length) { paceNote('slots'+slots.length); return null; }
+    let stall = 0;
+    let steps = 0;
+    while (rem2.size && steps++ < n * 3) {
+      const before = rem2.size;
+      const free = clickableIn(rem2);
+      const hit = free.find(function (t) { return slots.indexOf(suit[t._idx]) >= 0; });
+      if (hit) {
+        if (!play(hit._idx)) { paceNote('rest-hit'); return null; }
+      } else {
+        const by = {};
+        free.forEach(function (t) {
+          if (!suit[t._idx]) return;
+          (by[suit[t._idx]] = by[suit[t._idx]] || []).push(t);
+        });
+        let pair = null;
+        Object.keys(by).forEach(function (k) { if (!pair && by[k].length >= 2) pair = by[k]; });
+        if (pair) {
+          if (!play(pair[0]._idx) || !play(pair[1]._idx)) { paceNote('rest-pair'); return null; }
+        } else {
+          const un = free.filter(function (t) { return !suit[t._idx]; });
+          if (un.length >= 2) {
+            const s = fresh();
+            if (!s) { paceNote('rest-fresh'); return null; }
+            suit[un[0]._idx] = suit[un[1]._idx] = s;
+            if (!play(un[0]._idx) || !play(un[1]._idx)) { paceNote('rest-play2'); return null; }
+          } else {
+            const opener = free.find(function (t) {
+              if (!suit[t._idx] || slots.length >= 3) return false;
+              const mate = items.find(function (j) {
+                return rem2.has(j._idx) && suit[j._idx] === suit[t._idx] && j._idx !== t._idx;
+              });
+              return mate && freedBy(rem2, t, mate);
+            });
+            if (opener) {
+              if (!play(opener._idx)) { paceNote('rest-open'); return null; }
+            } else if (un.length === 1) {
+              const t = un[0];
+              const mate = items.find(function (j) {
+                return rem2.has(j._idx) && !suit[j._idx] && j._idx !== t._idx && freedBy(rem2, t, j);
+              });
+              if (!mate) { paceNote('rest-below'); return null; }
+              const s = fresh();
+              if (!s) { paceNote('rest-fresh2'); return null; }
+              suit[t._idx] = suit[mate._idx] = s;
+              if (slots.length >= 3 || !play(t._idx)) { paceNote('rest-slot'); return null; }
+            } else {
+              paceNote('rest-stuck' + free.length + 's' + slots.length);
+              return null;
+            }
+          }
+        }
+      }
+      if (rem2.size === before) {
+        if (++stall > 2) { paceNote('rest-stall'); return null; }
+      } else stall = 0;
+    }
+    if (rem2.size || slots.length) { paceNote('rest'+rem2.size); return null; }
+    if (matchCount(decision) !== 1) { paceNote('after'+matchCount(decision)); return null; }
+    const tally = {};
+    let missing = false;
+    items.forEach(function (t) {
+      if (!suit[t._idx]) { missing = true; return; }
+      tally[suit[t._idx]] = (tally[suit[t._idx]] || 0) + 1;
+    });
+    if (missing) { paceNote('missing'); return null; }
+    if (Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; })) { paceNote('odd'); return null; }
+    const greedy = new Set(items.map(function (t) { return t._idx; }));
+    let gsteps = 0;
+    let sawFun = false;
+    let stuckFree = 0;
+    while (greedy.size && gsteps++ < n * 2) {
+      const free = clickableIn(greedy);
+      const removed = n - greedy.size;
+      const by = {};
+      free.forEach(function (t) { (by[suit[t._idx]] = by[suit[t._idx]] || []).push(t); });
+      let pair = null;
+      let matches = 0;
+      Object.keys(by).forEach(function (k) {
+        if (by[k].length >= 2) {
+          matches++;
+          if (!pair) pair = by[k];
+        }
+      });
+      if (removed / n <= 0.3 && matches >= 2) sawFun = true;
+      if (!pair) { stuckFree = free.length; break; }
+      greedy.delete(pair[0]._idx);
+      greedy.delete(pair[1]._idx);
+    }
+    if (!greedy.size || greedy.size < n * 0.45 || stuckFree < 8 || !sawFun) {
+      paceNote('curve');
+      return null;
+    }
+    [A, B, C, D, Q, P].forEach(function (t) { tiles[t._idx]._keepFace = true; });
+    return { assigned: items.map(function (t) { return suit[t._idx]; }), pairsPlaced: [] };
+  }
+
+  let triedQ = 0;
+  for (let qi = 0; qi < qCands.length && triedQ < 4; qi++) {
+    const Q = qCands[qi];
+    const under = belowOf(rem0, Q);
+    const C = under[0], D = under[1], P = under[2];
+    const others = freeNow.filter(function (t) { return t !== Q && posKey(t) !== posKey(Q); });
+    shuffle(others, rng);
+    let tried = 0;
+    for (let i = 0; i < others.length && tried < 6; i++) {
+      for (let j = i + 1; j < others.length && tried < 6; j++) {
+        tried++;
+        const got = attempt(Q, under[0], under[1], under[2], others[i], others[j]);
+        if (got) return got;
+      }
+    }
+    triedQ++;
+  }
+  paceNote('noq' + qCands.length + 'f' + freeNow.length + 'r' + (n - rem0.size));
+  return null;
+}
+
+
 // slotPressure: 0~1 槽位压力偏好。越大越倾向配"层高差大"的对(一张早露、一张深埋)，
 // 正向玩时玩家被迫把早露那张存进卡槽 -> 槽位占用升高、容错率降低
-function backwardFill(tiles, rng, slotPressure) {
+function legacyBackwardFill(tiles, rng, slotPressure) {
   const n = tiles.length;
   const totalPairs = n / 2;
   if (totalPairs !== Math.floor(totalPairs)) throw new Error(`牌数为奇数 ${n}`);
@@ -516,6 +873,937 @@ function backwardFill(tiles, rng, slotPressure) {
     remaining = remaining.filter(t => t !== t1 && t !== t2);
   }
   return { assigned, pairsPlaced };
+}
+
+// 深埋配对：大部分对子一张露在上面、另一张压在低三到四层。
+// 花色不平均，有的只有一对两对，有的四对五对。
+// 顺着能看见的对子点，槽会先满；按生成时的顺序才能在四格里走完。
+function deepFill(tiles, rng) {
+  const n = tiles.length;
+  function fail(tag) {
+    (globalThis.__deepWhy = globalThis.__deepWhy || []).push(tag);
+    return null;
+  }
+  if (n < 8 || n % 2) return fail('tiny');
+  const totalPairs = n / 2;
+  const items = tiles.map(function (t, idx) {
+    return {
+      layer: t.layer, row: t.row, col: t.col, _idx: idx,
+      spitterOrder: t.spitterOrder == null ? null : t.spitterOrder
+    };
+  });
+  function cellKey(t) { return t.layer + ',' + t.row + ',' + t.col; }
+  function visibleOf(list) {
+    const plain = [];
+    const queues = new Map();
+    list.forEach(function (t) {
+      if (t.spitterOrder == null) plain.push(t);
+      else {
+        const k = cellKey(t);
+        if (!queues.has(k)) queues.set(k, []);
+        queues.get(k).push(t);
+      }
+    });
+    const occ = new Set(plain.map(cellKey));
+    const out = plain.slice();
+    queues.forEach(function (arr, k) {
+      if (occ.has(k)) return;
+      arr.sort(function (a, b) { return a.spitterOrder - b.spitterOrder; });
+      out.push(arr[0]);
+    });
+    return out;
+  }
+  function clickableIn(set) {
+    const vis = visibleOf(items.filter(function (t) { return set.has(t._idx); }));
+    return vis.filter(function (tile) {
+      if (vis.some(function (o) {
+        return o !== tile && o.layer > tile.layer &&
+          Math.abs(o.row - tile.row) < 2 && Math.abs(o.col - tile.col) < 2;
+      })) return false;
+      const same = vis.filter(function (t) { return t.layer === tile.layer && t !== tile; });
+      const hasL = same.some(function (t) { return t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2; });
+      const hasR = same.some(function (t) { return t.col === tile.col + 2 && Math.abs(t.row - tile.row) < 2; });
+      return !(hasL && hasR);
+    });
+  }
+
+  const quotas = [];
+  let left = totalPairs;
+  const fatBudget = Math.floor(totalPairs * 0.5);
+  let fat = 0;
+  while (fat + 4 <= fatBudget && left >= 4 && quotas.length < 10) {
+    const q = (left >= 5 && rng() < 0.6) ? 5 : 4;
+    quotas.push(q);
+    left -= q;
+    fat += q;
+  }
+  while (left > 0) {
+    let q = (left >= 2 && rng() < 0.45) ? 2 : 1;
+    if (q > left) q = left;
+    quotas.push(q);
+    left -= q;
+  }
+  while (quotas.length > TYPE_COUNT) {
+    let i = quotas.lastIndexOf(1);
+    let add = 1;
+    if (i < 0) { i = quotas.lastIndexOf(2); add = 2; }
+    if (i < 0) break;
+    quotas.splice(i, 1);
+    const j = quotas.findIndex(function (q) { return q + add <= 5; });
+    if (j >= 0) quotas[j] += add;
+    else quotas[quotas.length - 1] += add;
+  }
+  const thin = [];
+  const fatPool = [];
+  quotas.forEach(function (q, i) {
+    const bag = q <= 2 ? thin : fatPool;
+    for (let k = 0; k < q; k++) bag.push(i + 1);
+  });
+  shuffle(thin, rng);
+  shuffle(fatPool, rng);
+
+  const assigned = new Array(n).fill(0);
+  const rem = new Set(items.map(function (t) { return t._idx; }));
+  const slots = [];
+  const initialFree = new Set(clickableIn(rem).map(function (t) { return t._idx; }));
+  const openingSuit = {};
+  const gaps = [];
+  let instant = 0;
+
+  function takeSuit(tile) {
+    const pools = tile && initialFree.has(tile._idx) ? [thin, fatPool] : [fatPool, thin];
+    for (let p = 0; p < pools.length; p++) {
+      const bag = pools[p];
+      for (let i = bag.length - 1; i >= 0; i--) {
+        const s = bag[i];
+        if (tile && initialFree.has(tile._idx) && openingSuit[s]) continue;
+        bag.splice(i, 1);
+        if (tile && initialFree.has(tile._idx)) openingSuit[s] = 1;
+        return s;
+      }
+    }
+    return 0;
+  }
+
+  let guard = 0;
+  while (rem.size && guard++ < n * 6) {
+    const free = clickableIn(rem);
+    const ready = free.filter(function (t) { return assigned[t._idx] && slots.indexOf(assigned[t._idx]) >= 0; });
+    if (ready.length) {
+      ready.sort(function (a, b) { return b.layer - a.layer; });
+      const t = ready[0];
+      slots.splice(slots.indexOf(assigned[t._idx]), 1);
+      rem.delete(t._idx);
+      continue;
+    }
+    const open = free.filter(function (t) { return !assigned[t._idx]; });
+    function instantPair(prefer) {
+      if (open.length < 2) return false;
+      let pair = null;
+      if (prefer) {
+        const other = open.find(function (t) {
+          return t !== prefer && !(initialFree.has(prefer._idx) && initialFree.has(t._idx));
+        });
+        if (other) pair = [prefer, other];
+      }
+      for (let i = 0; i < open.length && !pair; i++) {
+        for (let j = i + 1; j < open.length; j++) {
+          if (initialFree.has(open[i]._idx) && initialFree.has(open[j]._idx)) continue;
+          pair = [open[i], open[j]];
+          break;
+        }
+      }
+      if (!pair) return false;
+      const s = takeSuit(initialFree.has(pair[0]._idx) ? pair[0] : (initialFree.has(pair[1]._idx) ? pair[1] : null));
+      if (!s) return false;
+      assigned[pair[0]._idx] = assigned[pair[1]._idx] = s;
+      rem.delete(pair[0]._idx);
+      rem.delete(pair[1]._idx);
+      instant++;
+      gaps.push(Math.abs(pair[0].layer - pair[1].layer));
+      return true;
+    }
+    const digger = open.find(function (tile) {
+      return items.some(function (p) {
+        return rem.has(p._idx) && assigned[p._idx] && slots.indexOf(assigned[p._idx]) >= 0 &&
+          tile.layer > p.layer && Math.abs(tile.row - p.row) < 2 && Math.abs(tile.col - p.col) < 2;
+      });
+    });
+    if (digger && instantPair(digger)) continue;
+    if (slots.length >= 3 && instantPair()) continue;
+    if (slots.length >= 4 || !open.length) return fail('stuck' + slots.length + 'o' + open.length + 'r' + rem.size);
+    open.sort(function (a, b) { return b.layer - a.layer || a._idx - b._idx; });
+    const freeSet = new Set(free.map(function (t) { return t._idx; }));
+    function coverCount(t) {
+      let c = 0;
+      for (let i = 0; i < items.length; i++) {
+        const o = items[i];
+        if (!rem.has(o._idx) || o._idx === t._idx) continue;
+        if (o.layer > t.layer && Math.abs(o.row - t.row) < 2 && Math.abs(o.col - t.col) < 2) c++;
+      }
+      return c;
+    }
+    function covers(upper, lower) {
+      return upper.layer > lower.layer && Math.abs(upper.row - lower.row) < 2 && Math.abs(upper.col - lower.col) < 2;
+    }
+    let choice = null;
+    for (let i = open.length - 1; i >= 0 && !choice; i--) {
+      const tile = open[i];
+      const cands = items.filter(function (t) {
+        return rem.has(t._idx) && !assigned[t._idx] && !freeSet.has(t._idx) &&
+          covers(tile, t) && tile.layer - t.layer >= 3 && coverCount(t) <= 3;
+      });
+      if (!cands.length) continue;
+      cands.sort(function (a, b) { return coverCount(a) - coverCount(b); });
+      choice = { top: tile, partner: cands[0] };
+    }
+    if (!choice) {
+      const top = open[0];
+      const buried = items.filter(function (t) {
+        return rem.has(t._idx) && !assigned[t._idx] && t._idx !== top._idx && !freeSet.has(t._idx) && top.layer - t.layer >= 3;
+      });
+      if (!buried.length && instantPair()) continue;
+      if (!buried.length) return fail('nobury' + rem.size);
+      buried.sort(function (a, b) { return coverCount(a) - coverCount(b); });
+      choice = { top: top, partner: buried[0] };
+    }
+    const top = choice.top;
+    const partner = choice.partner;
+    const s = takeSuit(top);
+    if (!s) return fail('nosuit');
+    assigned[top._idx] = assigned[partner._idx] = s;
+    rem.delete(top._idx);
+    slots.push(s);
+    gaps.push(top.layer - partner.layer);
+    tiles[top._idx]._keepFace = true;
+  }
+  if (rem.size || slots.length) return fail('left' + rem.size + 's' + slots.length + 'g' + gaps.filter(function (g) { return g >= 3; }).length);
+  if (assigned.some(function (s) { return !s; })) return fail('hole');
+  const tally = {};
+  assigned.forEach(function (s) { tally[s] = (tally[s] || 0) + 1; });
+  const counts = Object.values(tally);
+  if (counts.some(function (c) { return c % 2 !== 0 || c > 10; })) return fail('badcount');
+  if (!counts.some(function (c) { return c >= 8; })) return fail('nofat');
+  if (!counts.some(function (c) { return c <= 4; })) return fail('nothin');
+  const deepN = gaps.filter(function (g) { return g >= 3; }).length;
+  if (deepN < totalPairs * 0.35) return fail('shallow' + deepN);
+
+  const start = new Set(items.map(function (t) { return t._idx; }));
+  const by = {};
+  clickableIn(start).forEach(function (t) { (by[assigned[t._idx]] = by[assigned[t._idx]] || []).push(t); });
+  let opening = 0;
+  Object.keys(by).forEach(function (k) { if (by[k].length >= 2) opening++; });
+  if (opening > 0) return fail('open' + opening);
+
+  const greedy = new Set(start);
+  const gSlots = [];
+  let gGuard = 0;
+  let pairMoves = 0;
+  let slotMoves = 0;
+  while (greedy.size && gGuard++ < n * 3) {
+    const gFree = clickableIn(greedy);
+    const hit = gFree.find(function (t) { return gSlots.indexOf(assigned[t._idx]) >= 0; });
+    if (hit) {
+      gSlots.splice(gSlots.indexOf(assigned[hit._idx]), 1);
+      greedy.delete(hit._idx);
+      continue;
+    }
+    const gBy = {};
+    gFree.forEach(function (t) { (gBy[assigned[t._idx]] = gBy[assigned[t._idx]] || []).push(t); });
+    const pair = Object.keys(gBy).map(function (k) { return gBy[k]; }).find(function (a) { return a.length >= 2; });
+    if (pair) {
+      pairMoves++;
+      greedy.delete(pair[0]._idx);
+      greedy.delete(pair[1]._idx);
+      continue;
+    }
+    if (gSlots.length >= 4 || !gFree.length) break;
+    slotMoves++;
+    gFree.sort(function (a, b) { return b.layer - a.layer; });
+    gSlots.push(assigned[gFree[0]._idx]);
+    greedy.delete(gFree[0]._idx);
+  }
+  if (!greedy.size) return fail('cleared-p' + pairMoves + '-s' + slotMoves);
+
+  return { assigned: assigned, pairsPlaced: [] };
+}
+
+// attempt: 0 第一次玩，死局；1 第一次重开，很难的活局；之后每重开一次陷阱变少，大约第 8 次重开可以按开局那种消法过关。
+function rhythmFill(tiles, rng, attempt) {
+  attempt = attempt | 0;
+  const n = tiles.length;
+  if (n < 8 || n % 2) return null;
+  const items = tiles.map(function (t, idx) {
+    return {
+      layer: +t.layer, row: +t.row, col: +t.col, _idx: idx,
+      spitterOrder: t.spitterOrder == null ? null : t.spitterOrder
+    };
+  });
+  function cellKey(t) { return t.layer + ',' + t.row + ',' + t.col; }
+  function visibleOf(list) {
+    const plain = [];
+    const queues = new Map();
+    list.forEach(function (t) {
+      if (t.spitterOrder == null) plain.push(t);
+      else {
+        const k = cellKey(t);
+        if (!queues.has(k)) queues.set(k, []);
+        queues.get(k).push(t);
+      }
+    });
+    const occ = new Set(plain.map(cellKey));
+    const out = plain.slice();
+    queues.forEach(function (arr, k) {
+      if (occ.has(k)) return;
+      arr.sort(function (a, b) { return a.spitterOrder - b.spitterOrder; });
+      out.push(arr[0]);
+    });
+    return out;
+  }
+  const higherOf = new Array(n);
+  const leftOf = new Array(n);
+  const rightOf = new Array(n);
+  for (let i = 0; i < n; i++) { higherOf[i] = []; leftOf[i] = []; rightOf[i] = []; }
+  for (let i = 0; i < n; i++) {
+    const a = items[i];
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const b = items[j];
+      if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
+      else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
+        if (b.col === a.col - 2) leftOf[i].push(j);
+        else if (b.col === a.col + 2) rightOf[i].push(j);
+      }
+    }
+  }
+  function sideBlocks(list, set, ignore) {
+    for (let k = 0; k < list.length; k++) {
+      const id = list[k];
+      if (id === ignore) continue;
+      if (set.has(id)) return true;
+    }
+    return false;
+  }
+  function isFreeIdx(set, idx, ignore) {
+    if (!set.has(idx) || idx === ignore) return false;
+    const h = higherOf[idx];
+    for (let k = 0; k < h.length; k++) {
+      const id = h[k];
+      if (id === ignore) continue;
+      if (set.has(id)) return false;
+    }
+    const L = sideBlocks(leftOf[idx], set, ignore);
+    if (!L) return true;
+    return !sideBlocks(rightOf[idx], set, ignore);
+  }
+  const hasQueue = items.some(function (t) { return t.spitterOrder != null; });
+  function clickableInSlow(set) {
+    const vis = visibleOf(items.filter(function (t) { return set.has(t._idx); }));
+    return vis.filter(function (tile) {
+      if (vis.some(function (o) {
+        return o !== tile && o.layer > tile.layer &&
+          Math.abs(o.row - tile.row) < 2 && Math.abs(o.col - tile.col) < 2;
+      })) return false;
+      const same = vis.filter(function (t) { return t.layer === tile.layer && t !== tile; });
+      const hasL = same.some(function (t) { return t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2; });
+      const hasR = same.some(function (t) { return t.col === tile.col + 2 && Math.abs(t.row - tile.row) < 2; });
+      return !(hasL && hasR);
+    });
+  }
+  function clickableIn(set) {
+    if (hasQueue) return clickableInSlow(set);
+    const out = [];
+    for (let i = 0; i < n; i++) if (isFreeIdx(set, i, -1)) out.push(items[i]);
+    return out;
+  }
+  function coversIn(set, t) {
+    const out = [];
+    const h = higherOf[t._idx];
+    for (let k = 0; k < h.length; k++) if (set.has(h[k])) out.push(items[h[k]]);
+    return out;
+  }
+  function separated(a, b) {
+    return Math.abs(a.row - b.row) >= 4 || Math.abs(a.col - b.col) >= 4;
+  }
+  function dist(a, b) {
+    return Math.abs(a.row - b.row) + Math.abs(a.col - b.col) + Math.abs(a.layer - b.layer) * 2;
+  }
+  function tooClose(a, b) {
+    const dl = Math.abs(a.layer - b.layer);
+    const dr = Math.abs(a.row - b.row);
+    const dc = Math.abs(a.col - b.col);
+    const cheb = Math.max(dr, dc);
+    if (dl >= 1 && dl <= 2 && dr < 2 && dc < 2) return true;
+    if (dl === 1 && cheb <= 2) return true;
+    if (dl === 0 && cheb <= 2) return true;
+    return false;
+  }
+  function stacked(a, b) {
+    const dl = Math.abs(a.layer - b.layer);
+    return dl >= 1 && dl <= 2 && Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
+  }
+  const noMutual = new Set();
+  let relaxNear = false;
+  function clashes(a, b) {
+    if (!a || !b) return false;
+    if (stacked(a, b)) return true;
+    if (!relaxNear && tooClose(a, b)) return true;
+    return false;
+  }
+  function pickFar(list) {
+    if (!list || list.length < 2) return null;
+    let best = null;
+    let bestD = -1;
+    let bestSep = false;
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const x = list[i];
+        const y = list[j];
+        if (clashes(x, y)) continue;
+        if (!relaxNear && noMutual.has(x._idx) && noMutual.has(y._idx)) continue;
+        const d = dist(x, y);
+        const sep = separated(x, y);
+        if (!best || (sep && !bestSep) || (sep === bestSep && d > bestD)) {
+          best = [x, y];
+          bestD = d;
+          bestSep = sep;
+        }
+      }
+    }
+    return best;
+  }
+
+  const trap = 1;
+  const assigned = new Array(n).fill(0);
+  const rem = new Set(items.map(function (t) { return t._idx; }));
+  const suitCount = {};
+  const script = [];
+
+  function suitFits(s, a, b) {
+    if (!a || !b || clashes(a, b)) return false;
+    for (let i = 0; i < n; i++) {
+      if (assigned[i] !== s) continue;
+      if (clashes(items[i], a) || clashes(items[i], b)) return false;
+    }
+    return true;
+  }
+  function takeSuit(a, b) {
+    const order = [];
+    for (let s = 1; s <= TYPE_COUNT; s++) order.push(s);
+    shuffle(order, rng);
+    let best = 0;
+    let bestC = 999;
+    for (let i = 0; i < order.length; i++) {
+      const s = order[i];
+      const c = suitCount[s] || 0;
+      if (c + 2 > 10) continue;
+      if (a && b && !suitFits(s, a, b)) continue;
+      if (c < bestC) {
+        bestC = c;
+        best = s;
+        if (c === 0) break;
+      }
+    }
+    if (!best) return 0;
+    suitCount[best] = (suitCount[best] || 0) + 2;
+    return best;
+  }
+
+  const cutPairs = Math.max(1, Math.round(4 * n / 196));
+  const openingCap = Math.max(2, Math.round(n / 100));
+  const easyTarget = Math.max(openingCap * 2, Math.floor(n * 0.30 / 2) * 2 - cutPairs * 2);
+  const initialFree = new Set(clickableIn(rem).map(function (t) { return t._idx; }));
+  let openingMade = 0;
+  let removed = 0;
+  let guard = 0;
+  let wave = 0;
+  while (guard++ < n && removed < easyTarget) {
+    const batch = clickableIn(rem).filter(function (t) { return !assigned[t._idx]; });
+    if (batch.length < 2) break;
+    wave++;
+    const used = new Set();
+    const pairs = [];
+    const order = batch.slice();
+    shuffle(order, rng);
+    for (let i = 0; i < order.length; i++) {
+      const seed = order[i];
+      if (used.has(seed._idx)) continue;
+      if (removed + pairs.length * 2 + 2 > easyTarget) break;
+      let best = null;
+      let bestD = -1;
+      let bestSep = false;
+      for (let j = 0; j < order.length; j++) {
+        const t = order[j];
+        if (used.has(t._idx) || t._idx === seed._idx) continue;
+        if (tooClose(seed, t)) continue;
+        if (initialFree.has(seed._idx) && initialFree.has(t._idx) && openingMade + pairs.length >= openingCap) continue;
+        if (noMutual.has(seed._idx) && noMutual.has(t._idx)) continue;
+        const d = dist(seed, t);
+        const sep = separated(seed, t);
+        if (!best || (sep && !bestSep) || (sep === bestSep && d > bestD)) {
+          best = t;
+          bestD = d;
+          bestSep = sep;
+        }
+      }
+      if (!best) continue;
+      used.add(seed._idx);
+      used.add(best._idx);
+      pairs.push([seed, best]);
+    }
+    if (wave === 1) {
+      items.forEach(function (t) {
+        if (initialFree.has(t._idx) && !used.has(t._idx)) noMutual.add(t._idx);
+      });
+    }
+    if (!pairs.length) break;
+    let placedWave = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      const s = takeSuit(pairs[i][0], pairs[i][1]);
+      if (!s) continue;
+      assigned[pairs[i][0]._idx] = assigned[pairs[i][1]._idx] = s;
+      rem.delete(pairs[i][0]._idx);
+      rem.delete(pairs[i][1]._idx);
+      script.push(['p', pairs[i][0]._idx, pairs[i][1]._idx]);
+      removed += 2;
+      placedWave++;
+      if (initialFree.has(pairs[i][0]._idx) && initialFree.has(pairs[i][1]._idx)) openingMade++;
+    }
+    if (!placedWave) break;
+  }
+  if (removed < 4) { globalThis.__rhythm = { fail: 'easy', removed: removed }; return null; }
+
+  const slots = [];
+  let guard2 = 0;
+  let gates = 0;
+  let moved = false;
+  while (rem.size && guard2++ < n * 6) {
+    if (moved) relaxNear = false;
+    moved = false;
+    const free = clickableIn(rem);
+    const ready = free.filter(function (t) { return assigned[t._idx] && slots.indexOf(assigned[t._idx]) >= 0; });
+    if (ready.length) {
+      ready.sort(function (a, b) { return a.layer - b.layer; });
+      const t = ready[0];
+      slots.splice(slots.indexOf(assigned[t._idx]), 1);
+      rem.delete(t._idx);
+      script.push(['m', t._idx]);
+      moved = true;
+      continue;
+    }
+    const hanging = free.filter(function (t) {
+      if (!assigned[t._idx] || slots.indexOf(assigned[t._idx]) >= 0) return false;
+      const mate = items.find(function (o) {
+        return rem.has(o._idx) && o._idx !== t._idx && assigned[o._idx] === assigned[t._idx];
+      });
+      if (!mate) return false;
+      const next = new Set(rem);
+      next.delete(t._idx);
+      return isFreeIdx(next, mate._idx, -1);
+    });
+    if (hanging.length && slots.length < 4) {
+      const t = hanging[0];
+      slots.push(assigned[t._idx]);
+      rem.delete(t._idx);
+      script.push(['k', t._idx]);
+      moved = true;
+      continue;
+    }
+    const open = free.filter(function (t) { return !assigned[t._idx]; });
+    function freedIf(removeIds, targetId) {
+      if (!rem.has(targetId)) return false;
+      for (let i = 0; i < removeIds.length; i++) if (removeIds[i] === targetId) return false;
+      const h = higherOf[targetId];
+      for (let k = 0; k < h.length; k++) {
+        const id = h[k];
+        if (removeIds.indexOf(id) >= 0) continue;
+        if (rem.has(id)) return false;
+      }
+      const ignoreSide = function (list) {
+        for (let k = 0; k < list.length; k++) {
+          const id = list[k];
+          if (removeIds.indexOf(id) >= 0) continue;
+          if (rem.has(id)) return true;
+        }
+        return false;
+      };
+      const L = ignoreSide(leftOf[targetId]);
+      if (!L) return true;
+      return !ignoreSide(rightOf[targetId]);
+    }
+    function tryGate() {
+      if (slots.length) return false;
+      if (open.length < 5) return false;
+      const keys = [];
+      for (let i = 0; i < open.length; i++) {
+        const top = open[i];
+        const partners = items.filter(function (t) {
+          if (!rem.has(t._idx) || assigned[t._idx] || t._idx === top._idx) return false;
+          const cov = coversIn(rem, t);
+          if (!(cov.length === 1 && cov[0]._idx === top._idx)) return false;
+          return freedIf([top._idx], t._idx);
+        });
+        const hidden = partners.filter(function (t) {
+          const dark = tiles[t._idx] && tiles[t._idx].isDark;
+          return dark || t.row !== top.row || t.col !== top.col;
+        });
+        if (!hidden.length) continue;
+        keys.push({ top: top, partner: hidden[Math.floor(rng() * hidden.length)] });
+      }
+      if (!keys.length) return false;
+      shuffle(keys, rng);
+      for (let ki = 0; ki < keys.length; ki++) {
+        const key = keys[ki];
+        const rest = open.filter(function (t) { return t._idx !== key.top._idx; });
+        const bait = pickFar(rest);
+        if (!bait) continue;
+        if (freedIf([bait[0]._idx, bait[1]._idx], key.partner._idx)) continue;
+        const decoys = rest.filter(function (t) { return t._idx !== bait[0]._idx && t._idx !== bait[1]._idx; });
+        const usedP = new Set([key.partner._idx, key.top._idx, bait[0]._idx, bait[1]._idx]);
+        const decoyPlan = [];
+        let decoyOk = true;
+        for (let d = 0; d < decoys.length; d++) {
+          const buried = items.filter(function (t) {
+            if (!rem.has(t._idx) || assigned[t._idx] || usedP.has(t._idx)) return false;
+            if (!freedIf([key.top._idx], t._idx)) return false;
+            if (freedIf([bait[0]._idx, bait[1]._idx], t._idx)) return false;
+            return true;
+          });
+          if (!buried.length) { decoyOk = false; break; }
+          decoyPlan.push([decoys[d], buried[0]]);
+          usedP.add(buried[0]._idx);
+        }
+        if (!decoyOk) continue;
+        const sb = takeSuit(bait[0], bait[1]);
+        const sk = takeSuit(key.top, key.partner);
+        if (!sb || !sk) { globalThis.__rhythm = { fail: 'suit', gates: gates }; return null; }
+        assigned[bait[0]._idx] = assigned[bait[1]._idx] = sb;
+        assigned[key.top._idx] = assigned[key.partner._idx] = sk;
+        const decoySuits = [];
+        for (let d = 0; d < decoyPlan.length; d++) {
+          const sd = takeSuit(decoyPlan[d][0], decoyPlan[d][1]);
+          if (!sd) { globalThis.__rhythm = { fail: 'suitd', gates: gates }; return null; }
+          assigned[decoyPlan[d][0]._idx] = assigned[decoyPlan[d][1]._idx] = sd;
+          decoySuits.push(sd);
+        }
+        rem.delete(key.top._idx);
+        slots.push(sk);
+        script.push(['k', key.top._idx]);
+        rem.delete(key.partner._idx);
+        slots.splice(slots.indexOf(sk), 1);
+        script.push(['m', key.partner._idx]);
+        for (let d = 0; d < decoyPlan.length; d++) {
+          const dt = decoyPlan[d][0];
+          const dp = decoyPlan[d][1];
+          const sd = assigned[dt._idx];
+          rem.delete(dt._idx);
+          slots.push(sd);
+          script.push(['k', dt._idx]);
+          rem.delete(dp._idx);
+          slots.splice(slots.indexOf(sd), 1);
+          script.push(['m', dp._idx]);
+        }
+        rem.delete(bait[0]._idx);
+        rem.delete(bait[1]._idx);
+        script.push(['p', bait[0]._idx, bait[1]._idx]);
+        return true;
+      }
+      return false;
+    }
+    if (false && trap >= 0.75 && tryGate()) { gates++; continue; }
+    const relieve = slots.length >= 3 && open.length >= 2;
+    const wantEasy = relieve || (trap < 0.95 && rng() > trap && open.length >= 2);
+    if (wantEasy && open.length >= 2) {
+      const pair = pickFar(open);
+      if (pair) {
+        const s = takeSuit(pair[0], pair[1]);
+        if (s) {
+          assigned[pair[0]._idx] = assigned[pair[1]._idx] = s;
+          rem.delete(pair[0]._idx);
+          rem.delete(pair[1]._idx);
+          script.push(['p', pair[0]._idx, pair[1]._idx]);
+          moved = true;
+          continue;
+        }
+      }
+    }
+    if (!open.length || slots.length >= 4) { globalThis.__rhythm = { fail: 'noslot', slots: slots.length, open: open.length, gates: gates, rem: rem.size }; return null; }
+    const maxLayer = open.reduce(function (m, t) { return Math.max(m, t.layer); }, 0);
+    const lows = open.filter(function (t) { return t.layer < maxLayer; });
+    const pool = lows.length ? lows : open;
+    shuffle(pool, rng);
+    let parked = false;
+    for (let i = 0; i < pool.length && !parked; i++) {
+      const top = pool[i];
+      const buried = items.filter(function (t) {
+        if (!rem.has(t._idx) || assigned[t._idx] || t._idx === top._idx) return false;
+        if (clashes(top, t)) return false;
+        const cov = coversIn(rem, t);
+        if (!cov.length || cov.length > 3) return false;
+        return isFreeIdx(rem, t._idx, top._idx);
+      });
+      buried.sort(function (a, b) {
+        return Math.abs(b.layer - top.layer) - Math.abs(a.layer - top.layer);
+      });
+      for (let bi = 0; bi < buried.length && !parked; bi++) {
+        const partner = buried[bi];
+        const s = takeSuit(top, partner);
+        if (!s) continue;
+        assigned[top._idx] = assigned[partner._idx] = s;
+        rem.delete(top._idx);
+        slots.push(s);
+        script.push(['k', top._idx]);
+        parked = true;
+      }
+    }
+    if (parked) { moved = true; continue; }
+    if (open.length >= 2) {
+      const pair = pickFar(open);
+      if (pair) {
+        const s = takeSuit(pair[0], pair[1]);
+        if (s) {
+          assigned[pair[0]._idx] = assigned[pair[1]._idx] = s;
+          rem.delete(pair[0]._idx);
+          rem.delete(pair[1]._idx);
+          script.push(['p', pair[0]._idx, pair[1]._idx]);
+          moved = true;
+          continue;
+        }
+      }
+    }
+    if (!relaxNear) {
+      relaxNear = true;
+      continue;
+    }
+    globalThis.__rhythm = { fail: 'noimm', open: open.length, rem: rem.size, slots: slots.length, gates: gates };
+    return null;
+  }
+  if (rem.size || slots.length) { globalThis.__rhythm = { fail: 'left', rem: rem.size, slots: slots.length, gates: gates }; return null; }
+  if (assigned.some(function (s) { return !s; })) return null;
+
+  const board = new Set(items.map(function (t) { return t._idx; }));
+  const sl = [];
+  function applyPick(id) {
+    const free = clickableIn(board);
+    if (!free.some(function (t) { return t._idx === id; })) return false;
+    const s = assigned[id];
+    const at = sl.indexOf(s);
+    if (at >= 0) sl.splice(at, 1);
+    else {
+      if (sl.length >= 4) return false;
+      sl.push(s);
+    }
+    board.delete(id);
+    return true;
+  }
+  for (let i = 0; i < script.length; i++) {
+    const step = script[i];
+    if (step[0] === 'p') {
+      if (!applyPick(step[1]) || !applyPick(step[2])) {
+        globalThis.__rhythm = { fail: 'replay-p', at: i, gates: gates };
+        return null;
+      }
+    } else if (!applyPick(step[1])) {
+      globalThis.__rhythm = { fail: 'replay-k', at: i, kind: step[0], gates: gates };
+      return null;
+    }
+  }
+  if (board.size || sl.length) return null;
+  const tally = {};
+  assigned.forEach(function (s) { tally[s] = (tally[s] || 0) + 1; });
+  if (Object.keys(tally).some(function (k) { return !tally[k] || tally[k] % 2 !== 0; })) return null;
+  let stackedHits = 0;
+  let nearHits = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (assigned[i] !== assigned[j]) continue;
+      if (stacked(items[i], items[j])) stackedHits++;
+      else if (tooClose(items[i], items[j])) nearHits++;
+    }
+  }
+  if (stackedHits) { globalThis.__rhythm = { fail: 'stack', stackedHits: stackedHits, nearHits: nearHits, easy: removed }; return null; }
+  const nearBudget = Math.max(4, Math.round(8 * n / 196));
+  if (nearHits > nearBudget) { globalThis.__rhythm = { fail: 'close', stackedHits: stackedHits, nearHits: nearHits, easy: removed }; return null; }
+
+  const openBy = {};
+  clickableIn(new Set(items.map(function (t) { return t._idx; }))).forEach(function (t) {
+    (openBy[assigned[t._idx]] = openBy[assigned[t._idx]] || []).push(t);
+  });
+  let opening = 0;
+  let spread = 0;
+  Object.keys(openBy).forEach(function (k) {
+    if (openBy[k].length < 2) return;
+    opening++;
+    if (separated(openBy[k][0], openBy[k][1])) spread++;
+  });
+  if (opening < 2 || spread < 1) { globalThis.__rhythm = { fail: 'open', opening: opening, gates: gates }; return null; }
+  if (trap >= 0.85) {
+    const boardG = new Set(items.map(function (t) { return t._idx; }));
+    const slG = [];
+    let g = 0;
+    while (boardG.size && g++ < n * 3) {
+      const fr = clickableIn(boardG);
+      const hit = fr.find(function (t) { return slG.indexOf(assigned[t._idx]) >= 0; });
+      if (hit) { slG.splice(slG.indexOf(assigned[hit._idx]), 1); boardG.delete(hit._idx); continue; }
+      const gBy = {};
+      fr.forEach(function (t) { (gBy[assigned[t._idx]] = gBy[assigned[t._idx]] || []).push(t); });
+      let pair = null;
+      Object.keys(gBy).forEach(function (k) { if (!pair && gBy[k].length >= 2) pair = gBy[k]; });
+      if (pair && slG.length < 4) { boardG.delete(pair[0]._idx); boardG.delete(pair[1]._idx); continue; }
+      if (slG.length >= 4 || !fr.length) break;
+      fr.sort(function (a, b) { return b.layer - a.layer; });
+      slG.push(assigned[fr[0]._idx]);
+      boardG.delete(fr[0]._idx);
+    }
+    if (boardG.size < Math.floor(n * 0.45)) { globalThis.__rhythm = { fail: 'greedy', gates: gates, left: boardG.size }; return null; }
+  }
+  globalThis.__rhythm = { attempt: attempt, trap: Math.round(trap * 100), opening: opening, spread: spread, easy: removed, gates: gates, dead: false, stackedHits: stackedHits, nearHits: nearHits };
+  return { assigned: assigned, pairsPlaced: [], script: script };
+}
+
+function visiblePlayTiles(rem) {
+  const list = [];
+  rem.forEach(function (t) { list.push(t); });
+  const plain = [];
+  const queues = new Map();
+  list.forEach(function (t) {
+    if (t.type === 'spitter') return;
+    if (t.spitterOrder == null) plain.push(t);
+    else {
+      const k = t.layer + ',' + t.row + ',' + t.col;
+      if (!queues.has(k)) queues.set(k, []);
+      queues.get(k).push(t);
+    }
+  });
+  const occ = new Set(plain.map(function (t) { return t.layer + ',' + t.row + ',' + t.col; }));
+  const out = plain.slice();
+  queues.forEach(function (arr, k) {
+    if (occ.has(k)) return;
+    arr.sort(function (a, b) { return a.spitterOrder - b.spitterOrder; });
+    out.push(arr[0]);
+  });
+  return out;
+}
+function playerClickable(tile, vis) {
+  if (vis.some(function (o) {
+    return o !== tile && o.layer > tile.layer &&
+      Math.abs(o.row - tile.row) < 2 && Math.abs(o.col - tile.col) < 2;
+  })) return false;
+  const same = vis.filter(function (t) { return t.layer === tile.layer && t !== tile; });
+  const hasL = same.some(function (t) { return t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2; });
+  const hasR = same.some(function (t) { return t.col === tile.col + 2 && Math.abs(t.row - tile.row) < 2; });
+  return !(hasL && hasR);
+}
+function verifySolution(tiles, solution) {
+  if (!solution || !Array.isArray(solution.steps)) return { ok: false, reason: '没有步骤' };
+  const playable = tiles.filter(function (t) { return t.type !== 'spitter'; });
+  const ids = new Set();
+  const tally = {};
+  for (let i = 0; i < playable.length; i++) {
+    const t = playable[i];
+    if (t.id == null || ids.has(t.id)) return { ok: false, reason: '牌 id 重复或缺失' };
+    ids.add(t.id);
+    if (t.typeId == null) return { ok: false, reason: '有牌没有花色' };
+    tally[t.typeId] = (tally[t.typeId] || 0) + 1;
+  }
+  if (Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; })) {
+    return { ok: false, reason: '花色张数不成对' };
+  }
+  if (solution.steps.length !== playable.length) return { ok: false, reason: '步骤数和牌数不一致' };
+  const rem = new Map();
+  playable.forEach(function (t) { rem.set(t.id, t); });
+  const slots = [];
+  const seen = new Set();
+  for (let i = 0; i < solution.steps.length; i++) {
+    const step = solution.steps[i];
+    if (!step || step.action !== 'pick') return { ok: false, reason: '第 ' + (i + 1) + ' 步不是 pick' };
+    if (seen.has(step.tileId)) return { ok: false, reason: '牌 ' + step.tileId + ' 被拿了两次' };
+    const tile = rem.get(step.tileId);
+    if (!tile) return { ok: false, reason: '牌 ' + step.tileId + ' 不在场' };
+    const vis = visiblePlayTiles(rem);
+    if (!playerClickable(tile, vis)) return { ok: false, reason: '牌 ' + step.tileId + ' 当时不能拿' };
+    const at = slots.indexOf(tile.typeId);
+    if (at >= 0) slots.splice(at, 1);
+    else {
+      if (slots.length >= (solution.slotCapacity || 4)) return { ok: false, reason: '第 ' + (i + 1) + ' 步卡槽已满' };
+      slots.push(tile.typeId);
+    }
+    rem.delete(tile.id);
+    seen.add(step.tileId);
+  }
+  if (rem.size || slots.length) return { ok: false, reason: '没有清空盘面或卡槽' };
+  return { ok: true };
+}
+function solutionFromScript(playable, script) {
+  const steps = [];
+  for (let i = 0; i < script.length; i++) {
+    const step = script[i];
+    if (step[0] === 'p') {
+      steps.push({ action: 'pick', tileId: playable[step[1]].id });
+      steps.push({ action: 'pick', tileId: playable[step[2]].id });
+    } else {
+      steps.push({ action: 'pick', tileId: playable[step[1]].id });
+    }
+  }
+  return { version: 1, slotCapacity: 4, usesProps: false, steps: steps };
+}
+function reshufflePlayLevel(level, attempt, rng) {
+  if (!level || !level.tiles) return null;
+  const tiles = level.tiles.map(function (t) { return Object.assign({}, t); });
+  const usedIds = new Set();
+  let nextId = 1;
+  tiles.forEach(function (t) {
+    if (t.id != null && !usedIds.has(t.id)) {
+      usedIds.add(t.id);
+      if (t.id >= nextId) nextId = t.id + 1;
+      return;
+    }
+    while (usedIds.has(nextId)) nextId++;
+    t.id = nextId;
+    usedIds.add(nextId);
+    nextId++;
+  });
+  const playable = [];
+  tiles.forEach(function (t) {
+    if (t.type === 'spitter') return;
+    playable.push(t);
+  });
+  if (!playable.length || playable.length % 2) return null;
+  let result = null;
+  for (let k = 0; k < 12 && !result; k++) {
+    result = rhythmFill(playable, makeRng((Math.floor(rng() * 1e9) + k * 97) >>> 0), 1);
+  }
+  if (!result || !result.script) return null;
+  let p = 0;
+  tiles.forEach(function (t) {
+    if (t.type === 'spitter') return;
+    t.typeId = result.assigned[p++];
+  });
+  const tally = {};
+  playable.forEach(function (t) { tally[t.typeId] = (tally[t.typeId] || 0) + 1; });
+  if (Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; })) return null;
+  const solution = solutionFromScript(playable, result.script);
+  const check = verifySolution(tiles, solution);
+  if (!check.ok) {
+    globalThis.__rhythm = { fail: 'verify', reason: check.reason };
+    return null;
+  }
+  const out = Object.assign({}, level, { tiles: tiles, solution: solution });
+  delete out._rhythmAttempt;
+  const darkIds = new Set();
+  tiles.forEach(function (t) { if (t.isDark) darkIds.add(t.id); });
+  try { out._difficulty = evaluateDifficulty({ tiles: tiles }, darkIds); } catch (_) {}
+  return out;
+}
+
+function backwardFill(tiles, rng, slotPressure) {
+  for (let k = 0; k < 8; k++) {
+    const rhythm = rhythmFill(tiles, makeRng((Math.floor(rng() * 1e9) + k * 97) >>> 0), 0);
+    if (rhythm) return rhythm;
+  }
+  const deep = deepFill(tiles, rng);
+  if (deep) return deep;
+  return legacyBackwardFill(tiles, rng, typeof slotPressure === 'number' ? slotPressure : 0.5);
 }
 
 // ============ 校验 ============
@@ -1323,6 +2611,7 @@ function computeMinSlots(tiles) {
       if (t.spitterOrder != null && t.manualSuit) queuePinIdx.push(i);
       // 已经手填花色、又不是暗牌笔的，不能再被暗牌比例翻成暗牌
       if (t.manualSuit && t.type !== 'dark' && t.type !== 'lock' && !t.isLock) keepFaceIdx.push(i);
+      if (t._keepFace) keepFaceIdx.push(i);
     });
     lockIdx.forEach(function (i) { marked.add(i); });
     queuePinIdx.forEach(function (i) { marked.add(i); });
@@ -1346,7 +2635,7 @@ function computeMinSlots(tiles) {
     tiles.sort(function (a, b) { return a.layer - b.layer || a.row - b.row || a.col - b.col; });
     tiles.forEach(function (t, i) { t.id = i + 1; });
     const finalTiles = tiles.map(function (t) {
-      const o = Object.assign({}, t); delete o._idx; delete o.pin; delete o.queueSuits;
+      const o = Object.assign({}, t); delete o._idx; delete o.pin; delete o.queueSuits; delete o._keepFace;
       o.isLock = t.type === 'lock' || t.isLock === true;
       if (o.isLock) {
         o.isDark = false;
@@ -1617,6 +2906,7 @@ function computeMinSlots(tiles) {
       else if (t.type === 'dark') paintedDarkIdx.push(i);
       if (t.spitterOrder != null && t.manualSuit) queuePinIdx.push(i);
       if (t.manualSuit && t.type !== 'dark' && t.type !== 'lock' && !t.isLock) keepFaceIdx.push(i);
+      if (t._keepFace) keepFaceIdx.push(i);
     });
     const dSet = new Set(paintedDarkIdx);
     if (darkMode && darkRatio != null) {
@@ -1678,7 +2968,7 @@ function computeMinSlots(tiles) {
     keyOf: keyOf, mirrorRow: mirrorRow, inBounds: inBounds, hasSupport: hasSupport, quadCovered: quadCovered,
     NAMES: NAMES, DARK_RATIO_MIN: DARK_RATIO_MIN, DARK_RATIO_MAX: DARK_RATIO_MAX, DARK_WEIGHT: DARK_WEIGHT,
     makeRng: makeRng, shuffle: shuffle, covers: covers, isClickable: isClickable,
-    desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, backwardFillPinned: backwardFillPinned, pinConstraintError: pinConstraintError, KEY_SUIT: KEY_SUIT, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty,
+    desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, backwardFillPinned: backwardFillPinned, pinConstraintError: pinConstraintError, KEY_SUIT: KEY_SUIT, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty, reshufflePlayLevel: reshufflePlayLevel, rhythmFill: rhythmFill, verifySolution: verifySolution,
     fillEditorShape: fillEditorShape, generateAndFill: generateAndFill, generateStackFromShape: generateStackFromShape, downloadJSON: downloadJSON,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

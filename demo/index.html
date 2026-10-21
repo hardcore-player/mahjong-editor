@@ -689,7 +689,7 @@ function render() {
 
   // 牌是正方形，2x2 格
   // 每层向上偏移 20% 格（编辑器风格）
-  const layerOffset = 0.3; // 每层向上偏移多少单位（3D 层叠;不能太大,否则上层累积向左上漂、看起来"延伸出底座"）
+  const layerOffset = 3 / 40; // 与编辑器一致：每层 3px / 40px 格。层再高，上层牌仍盖住同一格的下层牌
 
   // 计算缩放
   // 注意：layerOffset 是负数（向上偏移），所以总高度是牌堆高度 + 偏移量的绝对值
@@ -832,10 +832,8 @@ function renderDiscs() {
       // 半径 = 1 张麻将边长 = 2 子格(直径 4 子格,圆盘能盖到周围 2x2 麻将位的各一角)
       // 圆盘在 LN 与 LN+1 之间,L(N+1) tile 视觉上压着圆盘(tile 边长 2 cell,L(N+1) tile 中心因 layerOffset 偏离约 0.28 cell,边缘最远到 disc 圆心约 1.69 cell),所以 2 cell 半径刚好让 L(N+1) tile 主体压在 disc 上、disc 边缘凸出 tile 外作为可见的"垫片"
       const r = 2 * cellPx;
-      // layer 偏移:与牌一致——每层往上偏 layerOffset * cell(0.3 * cell)
-      // 圆盘在 LN 与 LN+1 之间,视觉层 = LN + 0.5 → 偏移 = (gapLayer + 0.5) * layerOffset * cell
-      // 为了视觉明显,放大 1.5 倍
-      const zOffset = (d.gapLayer + 1) * 0.3 * cellPx * 1.5;
+      // 与牌的层偏移一致，并略高出上一层牌面，圆盘仍像盖在两层之间
+      const zOffset = (d.gapLayer + 1) * (3 / 40) * cellPx * 1.5;
       const g = document.createElementNS(svgNS, 'g');
       g.setAttribute('opacity', a);
       g.setAttribute('transform', `translate(0, ${-zOffset})`);
@@ -1419,6 +1417,7 @@ function loadLevel(json) {
   const typePool = buildTypePool(numPairs);
   tiles = json.tiles.map(t => {
     const copy = { ...t };
+    if (copy.type === 'dark') copy.isDark = true;
     if (!copy.typeName && copy.typeId != null) {
       copy.typeName = typePool[copy.typeId] || ('牌' + copy.typeId);
     }
@@ -1437,7 +1436,7 @@ function loadLevel(json) {
   // 读取本关历史最佳成绩
   try { const v = localStorage.getItem('mahjong_best_' + levelKey()); levelBestMs = v ? parseInt(v, 10) : null; } catch (_) { levelBestMs = null; }
   hideMessage();
-  const hasDark = json.tiles.some(t => t.isDark);
+  const hasDark = json.tiles.some(t => t.isDark || t.type === 'dark');
   document.getElementById('level-name').textContent = '关卡 ' + (json.levelId || '?') + (hasDark ? ' · 含暗牌' : '');
   render();
   // 加载时若 disc 上方已无麻将,立即触发淡出(此前 sweepDiscsToFade 只在消除时才调,空 disc 会卡在场上不消失)
@@ -1447,6 +1446,11 @@ function loadLevel(json) {
 function restartLevel() {
   const actions = document.getElementById('win-actions');
   if (actions) actions.remove();
+  let embedded = false;
+  try { embedded = window.parent && window.parent !== window; } catch (_) {}
+  if (embedded) {
+    try { window.parent.postMessage({ type: 'previewRestart' }, '*'); return; } catch (_) {}
+  }
   if (levelData) loadLevel(levelData);
 }
 
