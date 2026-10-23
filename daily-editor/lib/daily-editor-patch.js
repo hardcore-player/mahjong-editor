@@ -381,10 +381,7 @@
                 throw new Error(e.message || String(e));
             }
 
-            const pairsPerSuit = Number(window.DAILY_PAIRS_PER_SUIT) > 0
-                ? Math.floor(Number(window.DAILY_PAIRS_PER_SUIT))
-                : (DailySolvableFill.DEFAULT_PAIRS_PER_SUIT || 2);
-            const result = DailySolvableFill.planTypeAssignments(json.tiles, { pairsPerSuit });
+            const result = DailySolvableFill.planTypeAssignments(json.tiles);
             if (!result.ok) {
                 restoreState(fullSnapshot);
                 toast(result.error || '生成失败', 'err');

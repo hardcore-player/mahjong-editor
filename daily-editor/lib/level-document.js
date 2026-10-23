@@ -28,11 +28,7 @@
 
     const MIN_TYPE_ID = 1;
 
-    /** 牌面资源数量；typeId 可大于此值，normalizeFaceId 取模映射 */
-    const FACE_COUNT = 31;
-
-    /** @deprecated 使用 FACE_COUNT；保留兼容 */
-    const MAX_TYPE_ID = FACE_COUNT;
+    const MAX_TYPE_ID = 31;
 
 
 
@@ -90,11 +86,9 @@
 
         const n = Math.trunc(typeId);
 
-        if (n < MIN_TYPE_ID) return null;
+        if (n >= MIN_TYPE_ID && n <= MAX_TYPE_ID) return n;
 
-        if (n <= FACE_COUNT) return n;
-
-        return ((n - 1) % FACE_COUNT) + 1;
+        return ((n - 1) % MAX_TYPE_ID) + 1;
 
     }
 
@@ -901,8 +895,6 @@
     LevelDocument.MIN_TYPE_ID = MIN_TYPE_ID;
 
     LevelDocument.MAX_TYPE_ID = MAX_TYPE_ID;
-
-    LevelDocument.FACE_COUNT = FACE_COUNT;
 
     LevelDocument.computeTotalPairs = computeTotalPairs;
 
