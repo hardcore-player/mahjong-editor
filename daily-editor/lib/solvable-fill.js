@@ -1,6 +1,13 @@
 /**
- * 可解花色生成 — 复用 editor/generator.js 的 backwardFill + verifyByElimination
- * 每日编辑器专用：typeId 1～31，仅普通牌 + 暗牌几何
+ * 可解花色生成 — 每日挑战专用
+ *
+ * 可点规则与正式客户端对齐（产品统一口径）：
+ * 1) 上方遮挡：只检查 layer+1（紧邻上层），同层足迹 abs(row)<2 且 abs(col)<2
+ * 2) 左右夹击：同层、col±2、abs(row差)<2；左右同时存在则不可拿
+ *
+ * 花色：不再限制 31 种。按「每花色对数」pairsPerSuit 配置，
+ * 由总对数算出所需花色种类 typeCount = ceil(totalPairs / pairsPerSuit)。
+ * 牌面资源仍可按 faceCount(默认 31) 取模映射显示。
  */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) {
@@ -11,11 +18,15 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     'use strict';
 
-    const TYPE_COUNT = 31;
+    /** @deprecated 仅作牌面资源数量参考，不再限制生成 typeId 上限 */
+    const FACE_COUNT = 31;
     const MIN_TYPE_ID = 1;
-    const MAX_TYPE_ID = 31;
+    const DEFAULT_PAIRS_PER_SUIT = 2;
     const DEFAULT_RETRIES = 100;
     const SOLVE_TIMEOUT_MS = 8000;
+
+    /** 产品统一：遮挡只看紧邻上层 */
+    const COVER_ONLY_NEXT_LAYER = true;
 
     function shuffle(arr, rng) {
         for (let i = arr.length - 1; i > 0; i--) {
@@ -36,25 +47,78 @@
         };
     }
 
+    function footprintsOverlap(a, b) {
+        return Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
+    }
+
+    /**
+     * 与正式客户端一致的可点判定。
+     * cover: 仅 layer === tile.layer + 1 且足迹重叠
+     * sandwich: 同层 col±2 且 abs(row)<2，左右皆有则不可拿
+     */
     function isClickable(tile, all) {
-        if (
-            all.some(
-                (o) =>
-                    o !== tile &&
-                    o.layer > tile.layer &&
-                    Math.abs(o.row - tile.row) < 2 &&
-                    Math.abs(o.col - tile.col) < 2,
-            )
-        ) {
-            return false;
+        if (!tile) return false;
+        for (let i = 0; i < all.length; i++) {
+            const o = all[i];
+            if (o === tile || o.id === tile.id) continue;
+            if (COVER_ONLY_NEXT_LAYER) {
+                if (o.layer !== tile.layer + 1) continue;
+            } else if (!(o.layer > tile.layer)) {
+                continue;
+            }
+            if (footprintsOverlap(o, tile)) return false;
         }
-        const same = all.filter((t) => t.layer === tile.layer && t !== tile);
-        const hasL = same.some((t) => t.col === tile.col - 2 && t.row === tile.row);
-        const hasR = same.some((t) => t.col === tile.col + 2 && t.row === tile.row);
+        const same = [];
+        for (let i = 0; i < all.length; i++) {
+            const t = all[i];
+            if (t === tile || t.id === tile.id) continue;
+            if (t.layer === tile.layer) same.push(t);
+        }
+        const hasL = same.some((t) => t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2);
+        const hasR = same.some((t) => t.col === tile.col + 2 && Math.abs(t.row - tile.row) < 2);
         return !(hasL && hasR);
     }
 
-    function backwardFill(tiles, rng, slotPressure) {
+    function resolvePairsPerSuit(opts) {
+        const n = opts && opts.pairsPerSuit != null ? Number(opts.pairsPerSuit) : DEFAULT_PAIRS_PER_SUIT;
+        if (!Number.isFinite(n) || n < 1) return DEFAULT_PAIRS_PER_SUIT;
+        return Math.floor(n);
+    }
+
+    /** 总对数 → 所需花色种类数（不设 31 上限） */
+    function computeTypeCount(totalPairs, pairsPerSuit) {
+        const pps = Math.max(1, pairsPerSuit | 0);
+        const pairs = Math.max(0, totalPairs | 0);
+        if (pairs === 0) return 0;
+        return Math.ceil(pairs / pps);
+    }
+
+    function buildTypePool(totalPairs, rng, opts) {
+        const pairsPerSuit = resolvePairsPerSuit(opts || {});
+        const typeCount = computeTypeCount(totalPairs, pairsPerSuit);
+        if (typeCount < 1) throw new Error('总对数为 0，无法分配花色');
+
+        const counts = new Array(typeCount).fill(0);
+        let placedPairs = 0;
+        while (placedPairs < totalPairs) {
+            const eligible = [];
+            for (let t = 0; t < typeCount; t++) {
+                if (counts[t] < pairsPerSuit) eligible.push(t);
+            }
+            const pool = eligible.length ? eligible : Array.from({ length: typeCount }, (_, i) => i);
+            const t = pool[Math.floor(rng() * pool.length)];
+            counts[t]++;
+            placedPairs++;
+        }
+        const typePool = [];
+        counts.forEach((c, t) => {
+            for (let k = 0; k < c; k++) typePool.push(t + MIN_TYPE_ID);
+        });
+        shuffle(typePool, rng);
+        return { typePool, typeCount, pairsPerSuit, counts };
+    }
+
+    function backwardFill(tiles, rng, slotPressure, opts) {
         const n = tiles.length;
         const totalPairs = n / 2;
         if (totalPairs !== Math.floor(totalPairs)) {
@@ -62,20 +126,8 @@
         }
         slotPressure = slotPressure != null ? slotPressure : 0.5;
 
-        const counts = new Array(TYPE_COUNT).fill(0);
-        let placedPairs = 0;
-        while (placedPairs < totalPairs) {
-            const eligible = [];
-            for (let t = 0; t < TYPE_COUNT; t++) if (counts[t] < 3) eligible.push(t);
-            const t = eligible[Math.floor(rng() * eligible.length)];
-            counts[t]++;
-            placedPairs++;
-        }
-        const typePool = [];
-        counts.forEach((c, t) => {
-            for (let k = 0; k < c; k++) typePool.push(t + 1);
-        });
-        shuffle(typePool, rng);
+        const plan = buildTypePool(totalPairs, rng, opts);
+        const typePool = plan.typePool;
 
         const assigned = new Array(n).fill(0);
         const pairsPlaced = [];
@@ -119,7 +171,12 @@
             pairsPlaced.push([t1._idx, t2._idx]);
             remaining = remaining.filter((t) => t !== t1 && t !== t2);
         }
-        return { assigned, pairsPlaced };
+        return {
+            assigned,
+            pairsPlaced,
+            typeCount: plan.typeCount,
+            pairsPerSuit: plan.pairsPerSuit,
+        };
     }
 
     function verifyByElimination(tiles, pairsPlaced) {
@@ -185,7 +242,6 @@
         return JSON.stringify(sig);
     }
 
-    /** pairsPlaced 与 verifyByElimination 同序：正向消除步骤 */
     function pairsPlacedToSolution(tiles, pairsPlaced) {
         return pairsPlaced.map(([i1, i2]) => ({ id1: tiles[i1].id, id2: tiles[i2].id }));
     }
@@ -247,7 +303,6 @@
     function findSolutionBfs(tiles, timeoutMs) {
         const deadline = Date.now() + (timeoutMs ?? SOLVE_TIMEOUT_MS);
         const initial = tiles.slice();
-        const total = initial.length;
 
         function stateKey(remaining) {
             return remaining
@@ -335,12 +390,18 @@
         const maxRetries = opts.maxRetries ?? DEFAULT_RETRIES;
         const startSeed = opts.seed ?? Math.floor(Math.random() * 1000) + 1;
         const slotPressure = opts.slotPressure ?? 0.5;
+        const pairsPerSuit = resolvePairsPerSuit(opts);
 
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             const seed = startSeed + attempt;
             let result;
             try {
-                result = backwardFill(fillTiles, makeRng(seed * 9301 + 49297), slotPressure);
+                result = backwardFill(
+                    fillTiles,
+                    makeRng(seed * 9301 + 49297),
+                    slotPressure,
+                    { pairsPerSuit },
+                );
             } catch (e) {
                 return { ok: false, status: 'failed', error: String(e.message || e) };
             }
@@ -351,6 +412,15 @@
             if (!verify.ok) continue;
 
             const solution = pairsPlacedToSolution(fillTiles, result.pairsPlaced);
+            // 首步可点再确认（防规则漏判）
+            const first = solution[0];
+            if (first) {
+                const open = filled.filter((t) => isClickable(t, filled));
+                const okFirst =
+                    open.some((t) => t.id === first.id1) && open.some((t) => t.id === first.id2);
+                if (!okFirst) continue;
+            }
+
             return {
                 ok: true,
                 status: 'verified',
@@ -359,7 +429,13 @@
                 assignedById: Object.fromEntries(filled.map((t) => [t.id, t.typeId])),
                 solution,
                 verify,
+                pairsPerSuit: result.pairsPerSuit,
+                typeCount: result.typeCount,
                 layoutFingerprint: computeLayoutFingerprint(fillTiles),
+                clickableRules: {
+                    cover: 'layer+1 only',
+                    sandwich: 'same-layer col±2 and abs(row)<2',
+                },
             };
         }
 
@@ -417,13 +493,20 @@
     }
 
     return {
-        TYPE_COUNT,
+        /** @deprecated 使用 FACE_COUNT；保留 TYPE_COUNT 兼容旧调用 */
+        TYPE_COUNT: FACE_COUNT,
+        FACE_COUNT,
         MIN_TYPE_ID,
-        MAX_TYPE_ID,
+        MAX_TYPE_ID: Infinity,
+        DEFAULT_PAIRS_PER_SUIT,
         SOLVE_TIMEOUT_MS,
+        COVER_ONLY_NEXT_LAYER,
         shuffle,
         makeRng,
+        footprintsOverlap,
         isClickable,
+        computeTypeCount,
+        resolvePairsPerSuit,
         backwardFill,
         verifyByElimination,
         forwardEliminable,

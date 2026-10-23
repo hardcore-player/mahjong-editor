@@ -622,12 +622,13 @@ function animateDiscFade() {
   }, 60); // 每帧 60ms,12 帧 ≈ 720ms 完成
 }
 
-// std 坐标：row=纵向(上下)，col=横向(左右)。左右夹住 = 同行(row 相等)、同列(col±2)。
+// std 坐标：row=纵向(上下)，col=横向(左右)。
+// 与正式客户端对齐：遮挡只看紧邻上层 layer+1；左右夹击同层 col±2 且 abs(row)<2。
 function isClickable(tile, allTiles) {
   // spitter 本体:仅要求不被上层牌压住,左右夹住不算(本身是装饰物,允许任意位置被点)
   if (tile.type === 'spitter') {
     for (const other of allTiles) {
-      if (other.id !== tile.id && other.layer > tile.layer && overlaps(other, tile)) return false;
+      if (other.id !== tile.id && other.layer === tile.layer + 1 && overlaps(other, tile)) return false;
     }
     // 圆盘也算上压
     for (const d of currentDiscs) {
@@ -637,7 +638,7 @@ function isClickable(tile, allTiles) {
     return true;
   }
   for (const other of allTiles) {
-    if (other.id !== tile.id && other.layer > tile.layer && overlaps(other, tile)) return false;
+    if (other.id !== tile.id && other.layer === tile.layer + 1 && overlaps(other, tile)) return false;
   }
   // 圆盘压住判定:圆盘插在 (gapLayer, gapLayer+1) 之间,对下层麻将(tile.layer <= gapLayer)是上压
   for (const d of currentDiscs) {
