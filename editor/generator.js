@@ -1287,23 +1287,30 @@ function rhythmFill(tiles, rng, attempt) {
     }
     return true;
   }
-  function takeSuit(a, b) {
+  function takeSuit(a, b, preferReuse) {
     const order = [];
     for (let s = 1; s <= TYPE_COUNT; s++) order.push(s);
     shuffle(order, rng);
     let best = 0;
-    let bestC = 999;
+    let bestC = preferReuse ? -1 : 999;
     for (let i = 0; i < order.length; i++) {
       const s = order[i];
       const c = suitCount[s] || 0;
       if (c + 2 > 10) continue;
+      if (preferReuse && c < 2) continue;
       if (a && b && !suitFits(s, a, b)) continue;
-      if (c < bestC) {
+      if (preferReuse) {
+        if (c > bestC && c <= 8) {
+          bestC = c;
+          best = s;
+        }
+      } else if (c < bestC) {
         bestC = c;
         best = s;
         if (c === 0) break;
       }
     }
+    if (!best && preferReuse) return takeSuit(a, b, false);
     if (!best) return 0;
     suitCount[best] = (suitCount[best] || 0) + 2;
     return best;
@@ -1376,8 +1383,33 @@ function rhythmFill(tiles, rng, attempt) {
   const slots = [];
   let guard2 = 0;
   let gates = 0;
+  let forceParks = 0;
+  let baitPairs = 0;
   let moved = false;
-  while (rem.size && guard2++ < n * 6) {
+  const minGates = Math.max(3, Math.round(n / 50));
+  const minForceParks = Math.max(8, Math.round(n / 22));
+  const minBait = Math.max(3, Math.round(n / 55));
+  const holdBait = new Set();
+  const pendingBait = [];
+  function flushBait() {
+    if (!pendingBait.length || slots.length >= 4) return false;
+    const pair = pendingBait[0];
+    if (!rem.has(pair[0]) || !rem.has(pair[1])) {
+      pendingBait.shift();
+      holdBait.delete(pair[0]);
+      holdBait.delete(pair[1]);
+      return false;
+    }
+    if (!isFreeIdx(rem, pair[0], -1) || !isFreeIdx(rem, pair[1], -1)) return false;
+    pendingBait.shift();
+    holdBait.delete(pair[0]);
+    holdBait.delete(pair[1]);
+    rem.delete(pair[0]);
+    rem.delete(pair[1]);
+    script.push(['p', pair[0], pair[1]]);
+    return true;
+  }
+  while (rem.size && guard2++ < n * 8) {
     if (moved) relaxNear = false;
     moved = false;
     const free = clickableIn(rem);
@@ -1392,11 +1424,12 @@ function rhythmFill(tiles, rng, attempt) {
       continue;
     }
     const hanging = free.filter(function (t) {
+      if (holdBait.has(t._idx)) return false;
       if (!assigned[t._idx] || slots.indexOf(assigned[t._idx]) >= 0) return false;
       const mate = items.find(function (o) {
         return rem.has(o._idx) && o._idx !== t._idx && assigned[o._idx] === assigned[t._idx];
       });
-      if (!mate) return false;
+      if (!mate || holdBait.has(mate._idx)) return false;
       const next = new Set(rem);
       next.delete(t._idx);
       return isFreeIdx(next, mate._idx, -1);
@@ -1406,6 +1439,10 @@ function rhythmFill(tiles, rng, attempt) {
       slots.push(assigned[t._idx]);
       rem.delete(t._idx);
       script.push(['k', t._idx]);
+      moved = true;
+      continue;
+    }
+    if (pendingBait.length && (forceParks >= 1 || rem.size <= pendingBait.length * 2 + 2) && flushBait()) {
       moved = true;
       continue;
     }
@@ -1431,28 +1468,46 @@ function rhythmFill(tiles, rng, attempt) {
       if (!L) return true;
       return !ignoreSide(rightOf[targetId]);
     }
+    function findBuriedFor(top, usedSet, maxCov) {
+      const lim = maxCov == null ? 5 : maxCov;
+      const buried = items.filter(function (t) {
+        if (!rem.has(t._idx) || assigned[t._idx] || t._idx === top._idx) return false;
+        if (usedSet && usedSet.has(t._idx)) return false;
+        if (clashes(top, t)) return false;
+        const cov = coversIn(rem, t);
+        if (!cov.length || cov.length > lim) return false;
+        return true;
+      });
+      buried.sort(function (a, b) {
+        const ca = coversIn(rem, a).length;
+        const cb = coversIn(rem, b).length;
+        if (ca !== cb) return ca - cb;
+        return Math.abs(b.layer - top.layer) - Math.abs(a.layer - top.layer);
+      });
+      return buried;
+    }
     function tryGate() {
       if (slots.length) return false;
-      if (open.length < 5) return false;
+      if (open.length < 4) return false;
       const keys = [];
       for (let i = 0; i < open.length; i++) {
         const top = open[i];
         const partners = items.filter(function (t) {
           if (!rem.has(t._idx) || assigned[t._idx] || t._idx === top._idx) return false;
           const cov = coversIn(rem, t);
-          if (!(cov.length === 1 && cov[0]._idx === top._idx)) return false;
+          if (!(cov.length >= 1 && cov.length <= 2 && cov.some(function (c) { return c._idx === top._idx; }))) return false;
           return freedIf([top._idx], t._idx);
         });
         const hidden = partners.filter(function (t) {
           const dark = tiles[t._idx] && tiles[t._idx].isDark;
-          return dark || t.row !== top.row || t.col !== top.col;
+          return dark || t.row !== top.row || t.col !== top.col || coversIn(rem, t).length >= 1;
         });
         if (!hidden.length) continue;
         keys.push({ top: top, partner: hidden[Math.floor(rng() * hidden.length)] });
       }
       if (!keys.length) return false;
       shuffle(keys, rng);
-      for (let ki = 0; ki < keys.length; ki++) {
+      for (let ki = 0; ki < Math.min(keys.length, 12); ki++) {
         const key = keys[ki];
         const rest = open.filter(function (t) { return t._idx !== key.top._idx; });
         const bait = pickFar(rest);
@@ -1462,7 +1517,8 @@ function rhythmFill(tiles, rng, attempt) {
         const usedP = new Set([key.partner._idx, key.top._idx, bait[0]._idx, bait[1]._idx]);
         const decoyPlan = [];
         let decoyOk = true;
-        for (let d = 0; d < decoys.length; d++) {
+        const decoyLimit = Math.min(decoys.length, 2);
+        for (let d = 0; d < decoyLimit; d++) {
           const buried = items.filter(function (t) {
             if (!rem.has(t._idx) || assigned[t._idx] || usedP.has(t._idx)) return false;
             if (!freedIf([key.top._idx], t._idx)) return false;
@@ -1470,21 +1526,32 @@ function rhythmFill(tiles, rng, attempt) {
             return true;
           });
           if (!buried.length) { decoyOk = false; break; }
-          decoyPlan.push([decoys[d], buried[0]]);
-          usedP.add(buried[0]._idx);
+          decoyPlan.push([decoys[d], buried[Math.floor(rng() * buried.length)]]);
+          usedP.add(decoyPlan[d][1]._idx);
         }
-        if (!decoyOk) continue;
-        const sb = takeSuit(bait[0], bait[1]);
+        if (!decoyOk && decoyLimit > 0) continue;
         const sk = takeSuit(key.top, key.partner);
-        if (!sb || !sk) { globalThis.__rhythm = { fail: 'suit', gates: gates }; return null; }
-        assigned[bait[0]._idx] = assigned[bait[1]._idx] = sb;
-        assigned[key.top._idx] = assigned[key.partner._idx] = sk;
-        const decoySuits = [];
+        const sb = takeSuit(bait[0], bait[1], baitPairs < minBait);
+        if (!sk || !sb) continue;
+        const planned = [];
+        let suitsOk = true;
         for (let d = 0; d < decoyPlan.length; d++) {
           const sd = takeSuit(decoyPlan[d][0], decoyPlan[d][1]);
-          if (!sd) { globalThis.__rhythm = { fail: 'suitd', gates: gates }; return null; }
-          assigned[decoyPlan[d][0]._idx] = assigned[decoyPlan[d][1]._idx] = sd;
-          decoySuits.push(sd);
+          if (!sd) { suitsOk = false; break; }
+          planned.push(sd);
+        }
+        if (!suitsOk) {
+          [sk, sb].concat(planned).forEach(function (s) {
+            if (!s) return;
+            suitCount[s] -= 2;
+            if (!suitCount[s]) delete suitCount[s];
+          });
+          continue;
+        }
+        assigned[bait[0]._idx] = assigned[bait[1]._idx] = sb;
+        assigned[key.top._idx] = assigned[key.partner._idx] = sk;
+        for (let d = 0; d < decoyPlan.length; d++) {
+          assigned[decoyPlan[d][0]._idx] = assigned[decoyPlan[d][1]._idx] = planned[d];
         }
         rem.delete(key.top._idx);
         slots.push(sk);
@@ -1492,6 +1559,7 @@ function rhythmFill(tiles, rng, attempt) {
         rem.delete(key.partner._idx);
         slots.splice(slots.indexOf(sk), 1);
         script.push(['m', key.partner._idx]);
+        forceParks++;
         for (let d = 0; d < decoyPlan.length; d++) {
           const dt = decoyPlan[d][0];
           const dp = decoyPlan[d][1];
@@ -1502,70 +1570,183 @@ function rhythmFill(tiles, rng, attempt) {
           rem.delete(dp._idx);
           slots.splice(slots.indexOf(sd), 1);
           script.push(['m', dp._idx]);
+          forceParks++;
         }
         rem.delete(bait[0]._idx);
         rem.delete(bait[1]._idx);
         script.push(['p', bait[0]._idx, bait[1]._idx]);
+        baitPairs++;
         return true;
       }
       return false;
     }
-    if (false && trap >= 0.75 && tryGate()) { gates++; continue; }
-    const relieve = slots.length >= 3 && open.length >= 2;
-    const wantEasy = relieve || (trap < 0.95 && rng() > trap && open.length >= 2);
-    if (wantEasy && open.length >= 2) {
+    function tryDoublePark() {
+      if (slots.length !== 0 || open.length < 2) return false;
+      const needMore = forceParks < minForceParks || gates < minGates;
+      if (!needMore && rng() > 0.5) return false;
+      const order = open.slice();
+      shuffle(order, rng);
+      const limitI = Math.min(order.length, 12);
+      for (let i = 0; i < limitI; i++) {
+        for (let j = i + 1; j < order.length; j++) {
+          const a = order[i];
+          const b = order[j];
+          if (clashes(a, b)) continue;
+          const used = new Set();
+          const buryA = findBuriedFor(a, used, 4);
+          if (!buryA.length) continue;
+          const pa = buryA[0];
+          used.add(pa._idx);
+          const buryB = findBuriedFor(b, used, 4);
+          if (!buryB.length) continue;
+          const pb = buryB[0];
+          const sa = takeSuit(a, pa);
+          const sb = takeSuit(b, pb);
+          if (!sa || !sb) {
+            if (sa) { suitCount[sa] -= 2; if (!suitCount[sa]) delete suitCount[sa]; }
+            if (sb) { suitCount[sb] -= 2; if (!suitCount[sb]) delete suitCount[sb]; }
+            continue;
+          }
+          assigned[a._idx] = assigned[pa._idx] = sa;
+          assigned[b._idx] = assigned[pb._idx] = sb;
+          rem.delete(a._idx);
+          slots.push(sa);
+          script.push(['k', a._idx]);
+          rem.delete(b._idx);
+          slots.push(sb);
+          script.push(['k', b._idx]);
+          forceParks += 2;
+          return true;
+        }
+      }
+      return false;
+    }
+    function trySimpleBait() {
+      if (slots.length !== 0 || open.length < 3) return false;
+      if (gates >= minGates && baitPairs >= minBait && rng() > 0.35) return false;
+      const order = open.slice();
+      shuffle(order, rng);
+      for (let i = 0; i < Math.min(order.length, 14); i++) {
+        const top = order[i];
+        const partners = findBuriedFor(top, null, 3);
+        if (!partners.length) continue;
+        const partner = partners[0];
+        const rest = open.filter(function (t) { return t._idx !== top._idx; });
+        let bait = pickFar(rest);
+        if (!bait && rest.length >= 2) {
+          for (let x = 0; x < rest.length && !bait; x++) {
+            for (let y = x + 1; y < rest.length; y++) {
+              if (!clashes(rest[x], rest[y])) { bait = [rest[x], rest[y]]; break; }
+            }
+          }
+        }
+        if (!bait) continue;
+        const sk = takeSuit(top, partner);
+        const sb = takeSuit(bait[0], bait[1], baitPairs < minBait);
+        if (!sk || !sb) {
+          if (sk) { suitCount[sk] -= 2; if (!suitCount[sk]) delete suitCount[sk]; }
+          if (sb) { suitCount[sb] -= 2; if (!suitCount[sb]) delete suitCount[sb]; }
+          continue;
+        }
+        assigned[top._idx] = assigned[partner._idx] = sk;
+        assigned[bait[0]._idx] = assigned[bait[1]._idx] = sb;
+        holdBait.add(bait[0]._idx);
+        holdBait.add(bait[1]._idx);
+        pendingBait.push([bait[0]._idx, bait[1]._idx]);
+        rem.delete(top._idx);
+        slots.push(sk);
+        script.push(['k', top._idx]);
+        forceParks++;
+        baitPairs++;
+        return true;
+      }
+      return false;
+    }
+    const latePhase = rem.size <= n - Math.max(8, easyTarget);
+    const wantTrap = gates < minGates || baitPairs < minBait || forceParks < minForceParks;
+    if (slots.length === 0 && (latePhase || wantTrap)) {
+      if (wantTrap && tryDoublePark()) { gates++; moved = true; continue; }
+      if (trySimpleBait()) { gates++; moved = true; continue; }
+      if (tryGate()) { gates++; moved = true; continue; }
+      if (tryDoublePark()) { gates++; moved = true; continue; }
+    }
+    const relieve = slots.length >= 2 && slots.length < 4 && open.length >= 2;
+    if (relieve) {
       const pair = pickFar(open);
       if (pair) {
-        const s = takeSuit(pair[0], pair[1]);
+        const s = takeSuit(pair[0], pair[1], baitPairs < minBait);
         if (s) {
           assigned[pair[0]._idx] = assigned[pair[1]._idx] = s;
           rem.delete(pair[0]._idx);
           rem.delete(pair[1]._idx);
           script.push(['p', pair[0]._idx, pair[1]._idx]);
+          if (suitCount[s] >= 4) baitPairs++;
           moved = true;
           continue;
         }
       }
     }
-    if (!open.length || slots.length >= 4) { globalThis.__rhythm = { fail: 'noslot', slots: slots.length, open: open.length, gates: gates, rem: rem.size }; return null; }
+    if (!open.length || slots.length >= 4) {
+      globalThis.__rhythm = { fail: 'noslot', slots: slots.length, open: open.length, gates: gates, rem: rem.size };
+      return null;
+    }
     const maxLayer = open.reduce(function (m, t) { return Math.max(m, t.layer); }, 0);
     const lows = open.filter(function (t) { return t.layer < maxLayer; });
-    const pool = lows.length ? lows : open;
+    const pool = lows.length ? lows : open.slice();
     shuffle(pool, rng);
     let parked = false;
-    for (let i = 0; i < pool.length && !parked; i++) {
-      const top = pool[i];
-      const buried = items.filter(function (t) {
-        if (!rem.has(t._idx) || assigned[t._idx] || t._idx === top._idx) return false;
-        if (clashes(top, t)) return false;
-        const cov = coversIn(rem, t);
-        if (!cov.length || cov.length > 3) return false;
-        return isFreeIdx(rem, t._idx, top._idx);
-      });
-      buried.sort(function (a, b) {
-        return Math.abs(b.layer - top.layer) - Math.abs(a.layer - top.layer);
-      });
-      for (let bi = 0; bi < buried.length && !parked; bi++) {
-        const partner = buried[bi];
-        const s = takeSuit(top, partner);
-        if (!s) continue;
-        assigned[top._idx] = assigned[partner._idx] = s;
-        rem.delete(top._idx);
-        slots.push(s);
-        script.push(['k', top._idx]);
-        parked = true;
+    if (slots.length < 3) {
+      for (let i = 0; i < pool.length && !parked; i++) {
+        const top = pool[i];
+        const buried = findBuriedFor(top, null, slots.length >= 2 ? 2 : (relaxNear ? 5 : 3)).filter(function (t) {
+          return freedIf([top._idx], t._idx) || coversIn(rem, t).length <= 2;
+        });
+        for (let bi = 0; bi < buried.length && !parked; bi++) {
+          const partner = buried[bi];
+          const s = takeSuit(top, partner);
+          if (!s) continue;
+          assigned[top._idx] = assigned[partner._idx] = s;
+          rem.delete(top._idx);
+          slots.push(s);
+          script.push(['k', top._idx]);
+          forceParks++;
+          parked = true;
+        }
       }
     }
     if (parked) { moved = true; continue; }
-    if (open.length >= 2) {
+    if (!parked && slots.length <= 1 && relaxNear) {
+      for (let i = 0; i < pool.length && !parked; i++) {
+        const top = pool[i];
+        const any = items.filter(function (t) {
+          if (!rem.has(t._idx) || assigned[t._idx] || t._idx === top._idx) return false;
+          return !clashes(top, t);
+        });
+        shuffle(any, rng);
+        for (let ai = 0; ai < Math.min(any.length, 16) && !parked; ai++) {
+          const partner = any[ai];
+          const s = takeSuit(top, partner);
+          if (!s) continue;
+          assigned[top._idx] = assigned[partner._idx] = s;
+          rem.delete(top._idx);
+          slots.push(s);
+          script.push(['k', top._idx]);
+          forceParks++;
+          parked = true;
+        }
+      }
+    }
+    if (parked) { moved = true; continue; }
+    if (open.length >= 2 && slots.length < 4) {
       const pair = pickFar(open);
       if (pair) {
-        const s = takeSuit(pair[0], pair[1]);
+        const s = takeSuit(pair[0], pair[1], baitPairs < minBait && latePhase);
         if (s) {
           assigned[pair[0]._idx] = assigned[pair[1]._idx] = s;
           rem.delete(pair[0]._idx);
           rem.delete(pair[1]._idx);
           script.push(['p', pair[0]._idx, pair[1]._idx]);
+          if (suitCount[s] >= 4) baitPairs++;
           moved = true;
           continue;
         }
@@ -1575,10 +1756,15 @@ function rhythmFill(tiles, rng, attempt) {
       relaxNear = true;
       continue;
     }
-    globalThis.__rhythm = { fail: 'noimm', open: open.length, rem: rem.size, slots: slots.length, gates: gates };
+    if (pendingBait.length && flushBait()) { moved = true; continue; }
+    globalThis.__rhythm = { fail: 'noimm', open: open.length, rem: rem.size, slots: slots.length, gates: gates, forceParks: forceParks };
     return null;
   }
-  if (rem.size || slots.length) { globalThis.__rhythm = { fail: 'left', rem: rem.size, slots: slots.length, gates: gates }; return null; }
+  while (pendingBait.length && flushBait()) { /* drain held bait pairs */ }
+  if (pendingBait.length || rem.size || slots.length) {
+    globalThis.__rhythm = { fail: 'left', rem: rem.size, slots: slots.length, gates: gates, forceParks: forceParks, pending: pendingBait.length };
+    return null;
+  }
   if (assigned.some(function (s) { return !s; })) return null;
 
   const board = new Set(items.map(function (t) { return t._idx; }));
@@ -1622,7 +1808,7 @@ function rhythmFill(tiles, rng, attempt) {
     }
   }
   if (stackedHits) { globalThis.__rhythm = { fail: 'stack', stackedHits: stackedHits, nearHits: nearHits, easy: removed }; return null; }
-  const nearBudget = Math.max(4, Math.round(8 * n / 196));
+  const nearBudget = Math.max(10, Math.round(14 * n / 196));
   if (nearHits > nearBudget) { globalThis.__rhythm = { fail: 'close', stackedHits: stackedHits, nearHits: nearHits, easy: removed }; return null; }
 
   const openBy = {};
@@ -1637,6 +1823,14 @@ function rhythmFill(tiles, rng, attempt) {
     if (separated(openBy[k][0], openBy[k][1])) spread++;
   });
   if (opening < 2 || spread < 1) { globalThis.__rhythm = { fail: 'open', opening: opening, gates: gates }; return null; }
+  if (forceParks < Math.max(4, Math.round(minForceParks * 0.45))) {
+    globalThis.__rhythm = { fail: 'parks', forceParks: forceParks, gates: gates, bait: baitPairs };
+    return null;
+  }
+  if (n >= 100 && gates < Math.min(3, Math.max(2, Math.round(minGates * 0.5)))) {
+    globalThis.__rhythm = { fail: 'gates', forceParks: forceParks, gates: gates, bait: baitPairs };
+    return null;
+  }
   if (trap >= 0.85) {
     const boardG = new Set(items.map(function (t) { return t._idx; }));
     const slG = [];
@@ -1655,9 +1849,538 @@ function rhythmFill(tiles, rng, attempt) {
       slG.push(assigned[fr[0]._idx]);
       boardG.delete(fr[0]._idx);
     }
-    if (boardG.size < Math.floor(n * 0.45)) { globalThis.__rhythm = { fail: 'greedy', gates: gates, left: boardG.size }; return null; }
+    const greedyNeed = Math.floor(n * 0.55);
+    if (boardG.size < greedyNeed) { globalThis.__rhythm = { fail: 'greedy', gates: gates, left: boardG.size, need: greedyNeed, forceParks: forceParks }; return null; }
   }
-  globalThis.__rhythm = { attempt: attempt, trap: Math.round(trap * 100), opening: opening, spread: spread, easy: removed, gates: gates, dead: false, stackedHits: stackedHits, nearHits: nearHits };
+  globalThis.__rhythm = {
+    attempt: attempt, trap: Math.round(trap * 100), opening: opening, spread: spread, easy: removed,
+    gates: gates, forceParks: forceParks, bait: baitPairs, dead: false, stackedHits: stackedHits, nearHits: nearHits
+  };
+  return { assigned: assigned, pairsPlaced: [], script: script };
+}
+
+/**
+ * 死局优先：先随机铺死局花色，再沿一条「边走边配」的窄走廊最小改线救活。
+ * 走廊推进时同步写 script，避免回放对不上。
+ */
+function deadRescueFill(tiles, rng, attempt) {
+  attempt = attempt | 0;
+  const n = tiles.length;
+  if (n < 8 || n % 2) return null;
+  const items = tiles.map(function (t, idx) {
+    return {
+      layer: +t.layer, row: +t.row, col: +t.col, _idx: idx,
+      spitterOrder: t.spitterOrder == null ? null : t.spitterOrder
+    };
+  });
+  const higherOf = new Array(n);
+  const leftOf = new Array(n);
+  const rightOf = new Array(n);
+  for (let i = 0; i < n; i++) { higherOf[i] = []; leftOf[i] = []; rightOf[i] = []; }
+  for (let i = 0; i < n; i++) {
+    const a = items[i];
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const b = items[j];
+      if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
+      else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
+        if (b.col === a.col - 2) leftOf[i].push(j);
+        else if (b.col === a.col + 2) rightOf[i].push(j);
+      }
+    }
+  }
+  function sideBlocks(list, set, ignore) {
+    for (let k = 0; k < list.length; k++) {
+      const id = list[k];
+      if (id === ignore) continue;
+      if (set.has(id)) return true;
+    }
+    return false;
+  }
+  function isFreeIdx(set, idx, ignore) {
+    if (!set.has(idx) || idx === ignore) return false;
+    const h = higherOf[idx];
+    for (let k = 0; k < h.length; k++) {
+      const id = h[k];
+      if (id === ignore) continue;
+      if (set.has(id)) return false;
+    }
+    if (!sideBlocks(leftOf[idx], set, ignore)) return true;
+    return !sideBlocks(rightOf[idx], set, ignore);
+  }
+  function clickableIn(set) {
+    const out = [];
+    for (let i = 0; i < n; i++) if (isFreeIdx(set, i, -1)) out.push(items[i]);
+    return out;
+  }
+  function coversIn(set, t) {
+    const out = [];
+    const h = higherOf[t._idx];
+    for (let k = 0; k < h.length; k++) if (set.has(h[k])) out.push(items[h[k]]);
+    return out;
+  }
+  function separated(a, b) {
+    return Math.abs(a.row - b.row) >= 4 || Math.abs(a.col - b.col) >= 4;
+  }
+  function dist(a, b) {
+    return Math.abs(a.row - b.row) + Math.abs(a.col - b.col) + Math.abs(a.layer - b.layer) * 2;
+  }
+  function stacked(a, b) {
+    const dl = Math.abs(a.layer - b.layer);
+    return dl >= 1 && dl <= 2 && Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
+  }
+  function tooClose(a, b) {
+    const dl = Math.abs(a.layer - b.layer);
+    const dr = Math.abs(a.row - b.row);
+    const dc = Math.abs(a.col - b.col);
+    const cheb = Math.max(dr, dc);
+    if (dl >= 1 && dl <= 2 && dr < 2 && dc < 2) return true;
+    if (dl === 1 && cheb <= 2) return true;
+    if (dl === 0 && cheb <= 2) return true;
+    return false;
+  }
+
+  // ----- Phase A: 随机死局配对 -----
+  const dead = new Array(n).fill(0);
+  const order = items.map(function (t) { return t._idx; });
+  shuffle(order, rng);
+  let nextSuit = 1;
+  const taken = new Set();
+  for (let oi = 0; oi < order.length; oi++) {
+    const a = order[oi];
+    if (taken.has(a)) continue;
+    let best = -1;
+    let bestScore = -1e9;
+    for (let oj = 0; oj < order.length; oj++) {
+      const b = order[oj];
+      if (b === a || taken.has(b) || stacked(items[a], items[b])) continue;
+      const covA = higherOf[a].length;
+      const covB = higherOf[b].length;
+      const score = (covA === 0 && covB === 0 ? 10 : 0) + Math.min(covA, covB) * 3 + dist(items[a], items[b]) * 0.05 + rng();
+      if (score > bestScore) { bestScore = score; best = b; }
+    }
+    if (best < 0) {
+      for (let oj = 0; oj < order.length; oj++) {
+        const b = order[oj];
+        if (b === a || taken.has(b) || stacked(items[a], items[b])) continue;
+        best = b;
+        break;
+      }
+    }
+    if (best < 0) { globalThis.__rhythm = { fail: 'dead-pair' }; return null; }
+    const s = nextSuit <= TYPE_COUNT ? nextSuit++ : (1 + Math.floor(rng() * TYPE_COUNT));
+    dead[a] = dead[best] = s;
+    taken.add(a);
+    taken.add(best);
+  }
+
+  // ----- Phase B: 在死局偏好下边走边配（只给未出场牌赋花色，绝不改已进槽的线）-----
+  const assigned = new Array(n).fill(0);
+  const suitCount = {};
+  const rem = new Set(items.map(function (t) { return t._idx; }));
+  const slots = [];
+  const script = [];
+  const pairs = [];
+  let forceParks = 0;
+  let doubleParks = 0;
+  let baitMarks = 0;
+
+  function recount() {
+    for (let k in suitCount) delete suitCount[k];
+    for (let i = 0; i < n; i++) if (assigned[i]) suitCount[assigned[i]] = (suitCount[assigned[i]] || 0) + 1;
+  }
+  function mateOf(idx) {
+    const s = assigned[idx];
+    if (!s) return -1;
+    for (let i = 0; i < n; i++) if (i !== idx && assigned[i] === s) return i;
+    return -1;
+  }
+  function takeSuit(a, b, prefer) {
+    if (stacked(items[a], items[b])) return 0;
+    recount();
+    const orderS = [];
+    if (prefer && prefer >= 1 && prefer <= TYPE_COUNT) orderS.push(prefer);
+    for (let s = 1; s <= TYPE_COUNT; s++) if (s !== prefer) orderS.push(s);
+    if (!prefer) shuffle(orderS, rng);
+    else {
+      const rest = orderS.slice(1);
+      shuffle(rest, rng);
+      for (let i = 0; i < rest.length; i++) orderS[i + 1] = rest[i];
+    }
+    let best = 0;
+    let bestC = 999;
+    for (let pass = 0; pass < 3 && !best; pass++) {
+      for (let i = 0; i < orderS.length; i++) {
+        const s = orderS[i];
+        const c = suitCount[s] || 0;
+        if (c + 2 > (pass >= 2 ? 10 : 8)) continue;
+        let bad = false;
+        for (let k = 0; k < n && !bad; k++) {
+          if (assigned[k] !== s) continue;
+          if (stacked(items[k], items[a]) || stacked(items[k], items[b])) bad = true;
+          else if (pass === 0 && (tooClose(items[k], items[a]) || tooClose(items[k], items[b]))) bad = true;
+        }
+        if (bad) continue;
+        // 死局同花优先
+        if (prefer && s === prefer) return s;
+        if (c < bestC) { bestC = c; best = s; if (c === 0 && !prefer) break; }
+      }
+    }
+    return best;
+  }
+  function bindPair(a, b) {
+    if (assigned[a] || assigned[b]) return 0;
+    const prefer = (dead[a] && dead[a] === dead[b]) ? dead[a] : 0;
+    const s = takeSuit(a, b, prefer);
+    if (!s) return 0;
+    assigned[a] = assigned[b] = s;
+    suitCount[s] = (suitCount[s] || 0) + 2;
+    pairs.push([a, b]);
+    if (prefer && s === prefer) baitMarks++;
+    else baitMarks++;
+    return s;
+  }
+  function pick(id) {
+    if (!isFreeIdx(rem, id, -1)) return false;
+    const s = assigned[id];
+    const at = slots.indexOf(s);
+    if (at >= 0) slots.splice(at, 1);
+    else {
+      if (slots.length >= 4) return false;
+      slots.push(s);
+    }
+    rem.delete(id);
+    return true;
+  }
+  function sweep() {
+    let moved = false;
+    for (let guard = 0; guard < n; guard++) {
+      const free = clickableIn(rem);
+      const ready = free.find(function (t) { return slots.indexOf(assigned[t._idx]) >= 0; });
+      if (ready) {
+        if (!pick(ready._idx)) break;
+        script.push(['m', ready._idx]);
+        moved = true;
+        continue;
+      }
+      const hang = free.find(function (t) {
+        if (slots.indexOf(assigned[t._idx]) >= 0) return false;
+        const mate = mateOf(t._idx);
+        if (mate < 0 || !rem.has(mate)) return false;
+        const next = new Set(rem);
+        next.delete(t._idx);
+        return isFreeIdx(next, mate, -1);
+      });
+      if (hang && slots.length < 4) {
+        if (!pick(hang._idx)) break;
+        script.push(['k', hang._idx]);
+        moved = true;
+        continue;
+      }
+      break;
+    }
+    return moved;
+  }
+
+  const easyTarget = Math.max(4, Math.floor(n * 0.16 / 2) * 2);
+  const openingCap = Math.max(2, Math.min(4, Math.round(n / 80)));
+  const initialFree = new Set(clickableIn(rem).map(function (t) { return t._idx; }));
+  let openingMade = 0;
+  let removed = 0;
+  let guard = 0;
+  // 在合格远距候选里随机抽，避免每次都锁死同一对角位
+  function pickRandomFarPair(list, wantSep) {
+    if (!list || list.length < 2) return null;
+    const cands = [];
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (stacked(list[i], list[j])) continue;
+        const d = dist(list[i], list[j]);
+        const sep = separated(list[i], list[j]);
+        if (wantSep && !sep && cands.some(function (c) { return c.sep; })) continue;
+        cands.push({
+          a: list[i], b: list[j], sep: sep, d: d,
+          score: (sep ? 80 : 0) + d + rng() * 24
+        });
+      }
+    }
+    if (!cands.length) return null;
+    cands.sort(function (x, y) { return y.score - x.score; });
+    const cut = Math.max(4, Math.min(cands.length, Math.ceil(cands.length * 0.4)));
+    const pool = cands.slice(0, cut);
+    return pool[Math.floor(rng() * pool.length)];
+  }
+  function deadMateOnBoard(idx) {
+    const s = dead[idx];
+    if (!s) return -1;
+    for (let i = 0; i < n; i++) {
+      if (i === idx || dead[i] !== s) continue;
+      if (!rem.has(i) || assigned[i]) continue;
+      return i;
+    }
+    return -1;
+  }
+  // 先强制做出至少 2 组开局当面可消（远距候选随机）
+  while (guard++ < n && openingMade < Math.max(2, openingCap)) {
+    const batch = clickableIn(rem).filter(function (t) { return initialFree.has(t._idx); });
+    if (batch.length < 2) break;
+    const best = pickRandomFarPair(batch, true) || pickRandomFarPair(batch, false);
+    if (!best || !bindPair(best.a._idx, best.b._idx)) break;
+    if (!pick(best.a._idx) || !pick(best.b._idx)) {
+      globalThis.__rhythm = { fail: 'open-pick' };
+      return null;
+    }
+    script.push(['p', best.a._idx, best.b._idx]);
+    removed += 2;
+    openingMade++;
+    sweep();
+  }
+  while (guard++ < n && removed < easyTarget) {
+    const batch = clickableIn(rem);
+    if (batch.length < 2) break;
+    const best = pickRandomFarPair(batch, removed < easyTarget * 0.6) || pickRandomFarPair(batch, false);
+    if (!best || !bindPair(best.a._idx, best.b._idx)) break;
+    if (!pick(best.a._idx) || !pick(best.b._idx)) break;
+    script.push(['p', best.a._idx, best.b._idx]);
+    removed += 2;
+    sweep();
+  }
+  if (removed < 4 || openingMade < 2) {
+    globalThis.__rhythm = { fail: 'easy', removed: removed, openingMade: openingMade };
+    return null;
+  }
+
+  guard = 0;
+  let relax = false;
+  while (rem.size && guard++ < n * 10) {
+    if (sweep()) continue;
+    const free = clickableIn(rem);
+    if (!free.length) { globalThis.__rhythm = { fail: 'nofree', rem: rem.size }; return null; }
+
+    // 卡槽将满：优先当面消一对腾位置
+    if (slots.length >= 3 && free.length >= 2) {
+      const pair = pickRandomFarPair(free, false);
+      if (pair && bindPair(pair.a._idx, pair.b._idx) && slots.length < 4) {
+        if (pick(pair.a._idx) && pick(pair.b._idx)) {
+          script.push(['p', pair.a._idx, pair.b._idx]);
+          continue;
+        }
+      }
+    }
+
+    // 双停牌
+    let placed = false;
+    if (slots.length === 0 && free.length >= 2 && rem.size > 12 && doubleParks < Math.max(3, Math.round(n / 45))) {
+      const pool = free.slice();
+      shuffle(pool, rng);
+      for (let i = 0; i < pool.length && !placed; i++) {
+        for (let j = i + 1; j < pool.length && !placed; j++) {
+          const a = pool[i];
+          const b = pool[j];
+          if (stacked(a, b)) continue;
+          const buryA = items.filter(function (t) {
+            if (!rem.has(t._idx) || t._idx === a._idx || t._idx === b._idx || assigned[t._idx]) return false;
+            if (stacked(a, t)) return false;
+            const cov = coversIn(rem, t);
+            return cov.length >= 1 && cov.length <= 3;
+          });
+          const buryB = items.filter(function (t) {
+            if (!rem.has(t._idx) || t._idx === a._idx || t._idx === b._idx || assigned[t._idx]) return false;
+            if (stacked(b, t)) return false;
+            const cov = coversIn(rem, t);
+            return cov.length >= 1 && cov.length <= 3;
+          });
+          if (!buryA.length || !buryB.length) continue;
+          shuffle(buryA, rng);
+          shuffle(buryB, rng);
+          let pa = null;
+          let pb = null;
+          // 偶尔跟死局边走，打散固定几何配对
+          const deadA = deadMateOnBoard(a._idx);
+          const deadB = deadMateOnBoard(b._idx);
+          if (rng() < 0.45 && deadA >= 0 && buryA.some(function (t) { return t._idx === deadA; })) {
+            pa = items[deadA];
+          }
+          if (rng() < 0.45 && deadB >= 0 && buryB.some(function (t) { return t._idx === deadB; })) {
+            pb = items[deadB];
+          }
+          for (let x = 0; x < buryA.length && !pa; x++) {
+            for (let y = 0; y < buryB.length; y++) {
+              if (buryA[x]._idx === buryB[y]._idx) continue;
+              if (pb && buryB[y]._idx !== pb._idx) continue;
+              pa = buryA[x];
+              pb = buryB[y];
+              break;
+            }
+          }
+          if (pa && !pb) {
+            for (let y = 0; y < buryB.length; y++) {
+              if (buryB[y]._idx === pa._idx) continue;
+              pb = buryB[y];
+              break;
+            }
+          }
+          if (!pa || !pb || pa._idx === pb._idx) continue;
+          if (!bindPair(a._idx, pa._idx) || !bindPair(b._idx, pb._idx)) continue;
+          if (!pick(a._idx) || !pick(b._idx)) continue;
+          script.push(['k', a._idx]);
+          script.push(['k', b._idx]);
+          forceParks += 2;
+          doubleParks++;
+          placed = true;
+        }
+      }
+    }
+    if (placed) continue;
+
+    // 单停牌：停一张，配埋牌（埋牌候选随机，并偏好死局伴侣）
+    const pool = free.slice();
+    shuffle(pool, rng);
+    if (slots.length < 3) {
+      for (let i = 0; i < pool.length && !placed; i++) {
+        const top = pool[i];
+        const buried = items.filter(function (t) {
+          if (!rem.has(t._idx) || t._idx === top._idx || assigned[t._idx]) return false;
+          if (stacked(top, t)) return false;
+          const cov = coversIn(rem, t);
+          if (!cov.length || cov.length > (relax ? 7 : 4)) return false;
+          return true;
+        });
+        if (!buried.length && relax) {
+          const any = items.filter(function (t) {
+            return rem.has(t._idx) && !assigned[t._idx] && t._idx !== top._idx && !stacked(top, t);
+          });
+          shuffle(any, rng);
+          if (any.length) buried.push(any[0]);
+        }
+        if (!buried.length) continue;
+        const deadM = deadMateOnBoard(top._idx);
+        if (deadM >= 0 && rng() < 0.5) {
+          const hit = buried.find(function (t) { return t._idx === deadM; });
+          if (hit) {
+            buried.splice(buried.indexOf(hit), 1);
+            buried.unshift(hit);
+          }
+        }
+        // 同埋深档里打乱，避免永远配同一张底牌
+        buried.sort(function (a, b) {
+          const ca = coversIn(rem, a).length;
+          const cb = coversIn(rem, b).length;
+          if (ca !== cb) return ca - cb;
+          return rng() - 0.5;
+        });
+        const tryN = Math.min(buried.length, Math.max(3, Math.ceil(buried.length * 0.6)));
+        const orderBi = [];
+        for (let bi = 0; bi < tryN; bi++) orderBi.push(bi);
+        shuffle(orderBi, rng);
+        for (let oi = 0; oi < orderBi.length && !placed; oi++) {
+          const partner = buried[orderBi[oi]];
+          if (!bindPair(top._idx, partner._idx)) continue;
+          if (!pick(top._idx)) continue;
+          script.push(['k', top._idx]);
+          forceParks++;
+          placed = true;
+        }
+      }
+    }
+    if (placed) continue;
+
+    // 末段或放松：当面一对
+    if (free.length >= 2 && (rem.size <= 16 || relax || slots.length >= 2)) {
+      const pair = pickRandomFarPair(free, false);
+      if (pair && slots.length < 4 && bindPair(pair.a._idx, pair.b._idx)) {
+        if (pick(pair.a._idx) && pick(pair.b._idx)) {
+          script.push(['p', pair.a._idx, pair.b._idx]);
+          continue;
+        }
+      }
+    }
+
+    if (!relax) { relax = true; continue; }
+    globalThis.__rhythm = { fail: 'corridor', rem: rem.size, slots: slots.length, parks: forceParks };
+    return null;
+  }
+  if (rem.size || slots.length) {
+    globalThis.__rhythm = { fail: 'left', rem: rem.size, slots: slots.length };
+    return null;
+  }
+  if (forceParks < Math.max(4, Math.round(n / 28))) {
+    globalThis.__rhythm = { fail: 'parks', forceParks: forceParks };
+    return null;
+  }
+
+  // 完整性
+  for (let i = 0; i < n; i++) if (!assigned[i]) { globalThis.__rhythm = { fail: 'orphan' }; return null; }
+  const tally = {};
+  assigned.forEach(function (s) { tally[s] = (tally[s] || 0) + 1; });
+  if (Object.keys(tally).some(function (k) { return tally[k] % 2; })) {
+    globalThis.__rhythm = { fail: 'odd' };
+    return null;
+  }
+  let stackedHits = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (assigned[i] === assigned[j] && stacked(items[i], items[j])) stackedHits++;
+    }
+  }
+  if (stackedHits) { globalThis.__rhythm = { fail: 'stack', stackedHits: stackedHits }; return null; }
+
+  // 开局当面可消
+  const openBy = {};
+  clickableIn(new Set(items.map(function (t) { return t._idx; }))).forEach(function (t) {
+    (openBy[assigned[t._idx]] = openBy[assigned[t._idx]] || []).push(t);
+  });
+  let opening = 0;
+  let spread = 0;
+  Object.keys(openBy).forEach(function (k) {
+    if (openBy[k].length < 2) return;
+    opening++;
+    if (separated(openBy[k][0], openBy[k][1])) spread++;
+  });
+  if (opening < 2) {
+    globalThis.__rhythm = { fail: 'open', opening: opening, spread: spread };
+    return null;
+  }
+
+  // 贪心早死 + 旁支宽度
+  const boardG = new Set(items.map(function (t) { return t._idx; }));
+  const slG = [];
+  let g = 0;
+  let branchSum = 0;
+  let branchN = 0;
+  while (boardG.size && g++ < n * 3) {
+    const fr = clickableIn(boardG);
+    const gBy = {};
+    fr.forEach(function (t) { (gBy[assigned[t._idx]] = gBy[assigned[t._idx]] || []).push(t); });
+    let freePairs = 0;
+    Object.keys(gBy).forEach(function (k) { if (gBy[k].length >= 2) freePairs++; });
+    if (g > 3) { branchSum += freePairs; branchN++; }
+    const hit = fr.find(function (t) { return slG.indexOf(assigned[t._idx]) >= 0; });
+    if (hit) { slG.splice(slG.indexOf(assigned[hit._idx]), 1); boardG.delete(hit._idx); continue; }
+    let pair = null;
+    Object.keys(gBy).forEach(function (k) { if (!pair && gBy[k].length >= 2) pair = gBy[k]; });
+    if (pair && slG.length < 4) { boardG.delete(pair[0]._idx); boardG.delete(pair[1]._idx); continue; }
+    if (slG.length >= 4 || !fr.length) break;
+    fr.sort(function (a, b) { return b.layer - a.layer; });
+    slG.push(assigned[fr[0]._idx]);
+    boardG.delete(fr[0]._idx);
+  }
+  const greedyNeed = Math.floor(n * 0.58);
+  if (boardG.size < greedyNeed) {
+    globalThis.__rhythm = { fail: 'greedy', left: boardG.size, need: greedyNeed, forceParks: forceParks };
+    return null;
+  }
+  const branchAvg = branchN ? branchSum / branchN : 99;
+  if (branchAvg > 2.1) {
+    globalThis.__rhythm = { fail: 'branchy', branchAvg: Math.round(branchAvg * 100) / 100, forceParks: forceParks };
+    return null;
+  }
+
+  globalThis.__rhythm = {
+    attempt: attempt, mode: 'dead-rescue', opening: opening, spread: spread, easy: removed,
+    forceParks: forceParks, doubleParks: doubleParks, bait: baitMarks, gates: doubleParks,
+    greedyLeft: boardG.size, branchAvg: Math.round(branchAvg * 100) / 100, dead: true
+  };
   return { assigned: assigned, pairsPlaced: [], script: script };
 }
 
@@ -1769,30 +2492,55 @@ function reshufflePlayLevel(level, attempt, rng) {
     playable.push(t);
   });
   if (!playable.length || playable.length % 2) return null;
-  let result = null;
-  for (let k = 0; k < 12 && !result; k++) {
-    result = rhythmFill(playable, makeRng((Math.floor(rng() * 1e9) + k * 97) >>> 0), 1);
+  const tries = Math.max(80, Math.min(200, Math.round(playable.length / 2)));
+  let accepted = null;
+  let lastFail = null;
+  for (let k = 0; k < tries && !accepted; k++) {
+    const result = deadRescueFill(playable, makeRng((Math.floor(rng() * 1e9) + k * 97) >>> 0), 1);
+    if (!result || !result.script || !result.assigned) {
+      lastFail = (globalThis.__rhythm && globalThis.__rhythm.fail) || 'fill';
+      continue;
+    }
+    let p = 0;
+    tiles.forEach(function (t) {
+      if (t.type === 'spitter') return;
+      t.typeId = result.assigned[p++];
+    });
+    const tally = {};
+    playable.forEach(function (t) { tally[t.typeId] = (tally[t.typeId] || 0) + 1; });
+    if (Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; })) {
+      lastFail = 'odd';
+      continue;
+    }
+    const solution = solutionFromScript(playable, result.script);
+    if (!solution.steps || solution.steps.length !== playable.length) {
+      lastFail = 'steps';
+      continue;
+    }
+    const check = verifySolution(tiles, solution);
+    if (!check.ok) {
+      lastFail = 'verify:' + (check.reason || '');
+      globalThis.__rhythm = Object.assign({}, globalThis.__rhythm || {}, { fail: 'verify', reason: check.reason });
+      continue;
+    }
+    // 二次确认：步骤必须清空盘面（verify 已查，这里再记日志）
+    accepted = { solution: solution, rhythm: globalThis.__rhythm };
   }
-  if (!result || !result.script) return null;
-  let p = 0;
-  tiles.forEach(function (t) {
-    if (t.type === 'spitter') return;
-    t.typeId = result.assigned[p++];
-  });
-  const tally = {};
-  playable.forEach(function (t) { tally[t.typeId] = (tally[t.typeId] || 0) + 1; });
-  if (Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; })) return null;
-  const solution = solutionFromScript(playable, result.script);
-  const check = verifySolution(tiles, solution);
-  if (!check.ok) {
-    globalThis.__rhythm = { fail: 'verify', reason: check.reason };
+  if (!accepted) {
+    globalThis.__rhythm = { fail: 'no-verified', lastFail: lastFail, tries: tries };
     return null;
   }
-  const out = Object.assign({}, level, { tiles: tiles, solution: solution });
+  const out = Object.assign({}, level, { tiles: tiles, solution: accepted.solution });
   delete out._rhythmAttempt;
   const darkIds = new Set();
   tiles.forEach(function (t) { if (t.isDark) darkIds.add(t.id); });
   try { out._difficulty = evaluateDifficulty({ tiles: tiles }, darkIds); } catch (_) {}
+  if (accepted.rhythm) {
+    globalThis.__rhythm = Object.assign({}, accepted.rhythm, {
+      verified: true,
+      steps: accepted.solution.steps.length
+    });
+  }
   return out;
 }
 
@@ -2968,7 +3716,7 @@ function computeMinSlots(tiles) {
     keyOf: keyOf, mirrorRow: mirrorRow, inBounds: inBounds, hasSupport: hasSupport, quadCovered: quadCovered,
     NAMES: NAMES, DARK_RATIO_MIN: DARK_RATIO_MIN, DARK_RATIO_MAX: DARK_RATIO_MAX, DARK_WEIGHT: DARK_WEIGHT,
     makeRng: makeRng, shuffle: shuffle, covers: covers, isClickable: isClickable,
-    desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, backwardFillPinned: backwardFillPinned, pinConstraintError: pinConstraintError, KEY_SUIT: KEY_SUIT, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty, reshufflePlayLevel: reshufflePlayLevel, rhythmFill: rhythmFill, verifySolution: verifySolution,
+    desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, backwardFillPinned: backwardFillPinned, pinConstraintError: pinConstraintError, KEY_SUIT: KEY_SUIT, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty, reshufflePlayLevel: reshufflePlayLevel, rhythmFill: rhythmFill, deadRescueFill: deadRescueFill, verifySolution: verifySolution,
     fillEditorShape: fillEditorShape, generateAndFill: generateAndFill, generateStackFromShape: generateStackFromShape, downloadJSON: downloadJSON,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
