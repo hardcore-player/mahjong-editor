@@ -446,8 +446,13 @@ function makeRng(seed) {
 }
 
 // ============ 几何 ============
+// covers / isClickable / playerClickable：与正式客户端一致（遮挡仅 layer+1，夹击 abs(row)<2）
+// 生成器内部 higherOf 仍用「任意更高层」（更严），见 deadRescueFill 注释
+function footprintsOverlap(a, b) {
+  return Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
+}
 function covers(a, b) {
-  return a.layer > b.layer && Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
+  return a.layer === b.layer + 1 && footprintsOverlap(a, b);
 }
 
 // ============ 节奏填色 ============
@@ -1169,6 +1174,8 @@ function rhythmFill(tiles, rng, attempt) {
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       const b = items[j];
+      // 生成图用「任意更高层」遮挡（比客户端更严），保证 dead-rescue 启发式仍能埋牌/开廊
+      // 导出前 verifySolution / playerClickable 再用客户端「仅 layer+1」验解，避免客户端死局
       if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
       else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
         if (b.col === a.col - 2) leftOf[i].push(j);
@@ -1882,6 +1889,8 @@ function deadRescueFill(tiles, rng, attempt) {
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       const b = items[j];
+      // 生成图用「任意更高层」遮挡（比客户端更严），保证 dead-rescue 启发式仍能埋牌/开廊
+      // 导出前 verifySolution / playerClickable 再用客户端「仅 layer+1」验解，避免客户端死局
       if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
       else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
         if (b.col === a.col - 2) leftOf[i].push(j);
@@ -2409,8 +2418,7 @@ function visiblePlayTiles(rem) {
 }
 function playerClickable(tile, vis) {
   if (vis.some(function (o) {
-    return o !== tile && o.layer > tile.layer &&
-      Math.abs(o.row - tile.row) < 2 && Math.abs(o.col - tile.col) < 2;
+    return o !== tile && covers(o, tile);
   })) return false;
   const same = vis.filter(function (t) { return t.layer === tile.layer && t !== tile; });
   const hasL = same.some(function (t) { return t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2; });
@@ -2592,14 +2600,13 @@ function forwardEliminable(arr) {
   return true;
 }
 
-// 游戏规则：被更高层压住不可点；被同层左右夹住不可点
-// std 坐标：row=上下(纵)，col=左右(横)。左右夹住 = 同列(col 相等)、row 相同、col±2。
+// 与正式客户端一致：紧邻上层遮挡；同层左右半格夹击
+// std 坐标：row=上下(纵)，col=左右(横)。左右夹住 = col±2 且 abs(row)<2。
 function isClickable(tile, all) {
-  if (all.some(o => o !== tile && o.layer > tile.layer &&
-      Math.abs(o.row - tile.row) < 2 && Math.abs(o.col - tile.col) < 2)) return false;
+  if (all.some(o => o !== tile && covers(o, tile))) return false;
   const same = all.filter(t => t.layer === tile.layer && t !== tile);
-  const hasL = same.some(t => t.col === tile.col - 2 && t.row === tile.row);
-  const hasR = same.some(t => t.col === tile.col + 2 && t.row === tile.row);
+  const hasL = same.some(t => t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2);
+  const hasR = same.some(t => t.col === tile.col + 2 && Math.abs(t.row - tile.row) < 2);
   return !(hasL && hasR);
 }
 
@@ -2654,29 +2661,19 @@ function assignDarkTiles(tiles, rng, options) {
 // ============ 难度评估（含暗钩子权重 + 钩子稀缺度） ============
 // 判断单张牌是否被埋:任意埋法(上压 / 左右夹)都算
 function isTileBuried(tile, allTiles) {
-  // 1. 同层被压:有上层牌覆盖
-  const hasUpper = allTiles.some(other =>
-    other.id !== tile.id &&
-    other.layer > tile.layer &&
-    Math.abs(other.row - tile.row) < 2 &&
-    Math.abs(other.col - tile.col) < 2
-  );
-  if (hasUpper) return true;
-  // 2. 左右夹:同层左右都被夹住,row 范围匹配(与 isClickable 一致)
+  // 与 isClickable 同口径：仅紧邻上层算上压，或同层左右半格夹击
+  if (allTiles.some(other => other !== tile && other.id !== tile.id && covers(other, tile))) return true;
   const sameLayer = allTiles.filter(t => t.layer === tile.layer && t.id !== tile.id);
   const hasLeft = sameLayer.some(t => t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2);
   const hasRight = sameLayer.some(t => t.col === tile.col + 2 && Math.abs(t.row - tile.row) < 2);
   return hasLeft && hasRight;
 }
 
-// 埋深：这张牌要"挖开多少张"才能见到。
-// 上压 → 被多少张上层牌盖住(深度 = 盖住它的牌数)；左右夹 → 算深度 1。
-// 深度越大越难（要清掉越多张才能点到它）。
+// 埋深：紧邻上层盖住张数；若无上压但左右夹 → 深度 1。
 function tileBuriedDepth(tile, all) {
   let depth = 0;
   for (const o of all) {
-    if (o.id !== tile.id && o.layer > tile.layer &&
-      Math.abs(o.row - tile.row) < 2 && Math.abs(o.col - tile.col) < 2) depth++;
+    if (o.id !== tile.id && covers(o, tile)) depth++;
   }
   if (depth > 0) return depth;
   const same = all.filter(t => t.layer === tile.layer && t.id !== tile.id);
