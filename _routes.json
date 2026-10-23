@@ -2,9 +2,6 @@
   "version": 1,
   "include": ["/*"],
   "exclude": [
-    "/daily-editor/assets/*",
-    "/daily-editor/lib/*",
-    "/daily-editor/*.js",
     "/editor/*",
     "/demo/*",
     "/assets/*"
