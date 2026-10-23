@@ -446,13 +446,12 @@ function makeRng(seed) {
 }
 
 // ============ 几何 ============
-// covers / isClickable / playerClickable：与正式客户端一致（遮挡仅 layer+1，夹击 abs(row)<2）
-// 生成器内部 higherOf 仍用「任意更高层」（更严），见 deadRescueFill 注释
+// 遮挡：任意更高层足迹重叠即压住（压一点也算）；夹击：同层 col±2 且 abs(row)<2
 function footprintsOverlap(a, b) {
   return Math.abs(a.row - b.row) < 2 && Math.abs(a.col - b.col) < 2;
 }
 function covers(a, b) {
-  return a.layer === b.layer + 1 && footprintsOverlap(a, b);
+  return a.layer > b.layer && footprintsOverlap(a, b);
 }
 
 // ============ 节奏填色 ============
@@ -685,8 +684,10 @@ function pacedFill(tiles, rng) {
       const s = suit[idx];
       const at = slots.indexOf(s);
       if (at >= 0) slots.splice(at, 1);
-      else if (slots.length >= 4) return false;
-      else slots.push(s);
+      else {
+        slots.push(s);
+        if (slots.length >= 4) { slots.pop(); return false; }
+      }
       rem2.delete(idx);
       return true;
     }
@@ -1174,8 +1175,6 @@ function rhythmFill(tiles, rng, attempt) {
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       const b = items[j];
-      // 生成图用「任意更高层」遮挡（比客户端更严），保证 dead-rescue 启发式仍能埋牌/开廊
-      // 导出前 verifySolution / playerClickable 再用客户端「仅 layer+1」验解，避免客户端死局
       if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
       else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
         if (b.col === a.col - 2) leftOf[i].push(j);
@@ -1394,12 +1393,12 @@ function rhythmFill(tiles, rng, attempt) {
   let baitPairs = 0;
   let moved = false;
   const minGates = Math.max(3, Math.round(n / 50));
-  const minForceParks = Math.max(8, Math.round(n / 22));
+  const minForceParks = Math.max(4, Math.round(n / 32));
   const minBait = Math.max(3, Math.round(n / 55));
   const holdBait = new Set();
   const pendingBait = [];
   function flushBait() {
-    if (!pendingBait.length || slots.length >= 4) return false;
+    if (!pendingBait.length || slots.length >= 3) return false;
     const pair = pendingBait[0];
     if (!rem.has(pair[0]) || !rem.has(pair[1])) {
       pendingBait.shift();
@@ -1441,7 +1440,7 @@ function rhythmFill(tiles, rng, attempt) {
       next.delete(t._idx);
       return isFreeIdx(next, mate._idx, -1);
     });
-    if (hanging.length && slots.length < 4) {
+    if (hanging.length && slots.length < 3) {
       const t = hanging[0];
       slots.push(assigned[t._idx]);
       rem.delete(t._idx);
@@ -1677,7 +1676,7 @@ function rhythmFill(tiles, rng, attempt) {
       if (tryGate()) { gates++; moved = true; continue; }
       if (tryDoublePark()) { gates++; moved = true; continue; }
     }
-    const relieve = slots.length >= 2 && slots.length < 4 && open.length >= 2;
+    const relieve = slots.length >= 2 && slots.length < 3 && open.length >= 2;
     if (relieve) {
       const pair = pickFar(open);
       if (pair) {
@@ -1693,7 +1692,7 @@ function rhythmFill(tiles, rng, attempt) {
         }
       }
     }
-    if (!open.length || slots.length >= 4) {
+    if (!open.length || (slots.length >= 3 && !open.some(function (t) { return slots.indexOf(assigned[t._idx]) >= 0; }))) {
       globalThis.__rhythm = { fail: 'noslot', slots: slots.length, open: open.length, gates: gates, rem: rem.size };
       return null;
     }
@@ -1744,7 +1743,7 @@ function rhythmFill(tiles, rng, attempt) {
       }
     }
     if (parked) { moved = true; continue; }
-    if (open.length >= 2 && slots.length < 4) {
+    if (open.length >= 2 && slots.length < 3) {
       const pair = pickFar(open);
       if (pair) {
         const s = takeSuit(pair[0], pair[1], baitPairs < minBait && latePhase);
@@ -1830,10 +1829,7 @@ function rhythmFill(tiles, rng, attempt) {
     if (separated(openBy[k][0], openBy[k][1])) spread++;
   });
   if (opening < 2 || spread < 1) { globalThis.__rhythm = { fail: 'open', opening: opening, gates: gates }; return null; }
-  if (forceParks < Math.max(4, Math.round(minForceParks * 0.45))) {
-    globalThis.__rhythm = { fail: 'parks', forceParks: forceParks, gates: gates, bait: baitPairs };
-    return null;
-  }
+  // parks 不足不再拒收（见 deadRescueFill 同口径说明）
   if (n >= 100 && gates < Math.min(3, Math.max(2, Math.round(minGates * 0.5)))) {
     globalThis.__rhythm = { fail: 'gates', forceParks: forceParks, gates: gates, bait: baitPairs };
     return null;
@@ -1889,8 +1885,6 @@ function deadRescueFill(tiles, rng, attempt) {
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
       const b = items[j];
-      // 生成图用「任意更高层」遮挡（比客户端更严），保证 dead-rescue 启发式仍能埋牌/开廊
-      // 导出前 verifySolution / playerClickable 再用客户端「仅 layer+1」验解，避免客户端死局
       if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
       else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
         if (b.col === a.col - 2) leftOf[i].push(j);
@@ -2055,8 +2049,12 @@ function deadRescueFill(tiles, rng, attempt) {
     const at = slots.indexOf(s);
     if (at >= 0) slots.splice(at, 1);
     else {
-      if (slots.length >= 4) return false;
+      // 与客户端一致：入槽后无配对且达到 4 张不同花色 → 立即失败
       slots.push(s);
+      if (slots.length >= 4) {
+        slots.pop();
+        return false;
+      }
     }
     rem.delete(id);
     return true;
@@ -2080,7 +2078,7 @@ function deadRescueFill(tiles, rng, attempt) {
         next.delete(t._idx);
         return isFreeIdx(next, mate, -1);
       });
-      if (hang && slots.length < 4) {
+      if (hang && slots.length < 3) {
         if (!pick(hang._idx)) break;
         script.push(['k', hang._idx]);
         moved = true;
@@ -2166,10 +2164,10 @@ function deadRescueFill(tiles, rng, attempt) {
     const free = clickableIn(rem);
     if (!free.length) { globalThis.__rhythm = { fail: 'nofree', rem: rem.size }; return null; }
 
-    // 卡槽将满：优先当面消一对腾位置
-    if (slots.length >= 3 && free.length >= 2) {
+    // 卡槽有空位时当面消一对；槽内已有 3 张不同花色时只能靠配对进槽
+    if (slots.length < 3 && free.length >= 2) {
       const pair = pickRandomFarPair(free, false);
-      if (pair && bindPair(pair.a._idx, pair.b._idx) && slots.length < 4) {
+      if (pair && bindPair(pair.a._idx, pair.b._idx)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
           continue;
@@ -2297,7 +2295,7 @@ function deadRescueFill(tiles, rng, attempt) {
     // 末段或放松：当面一对
     if (free.length >= 2 && (rem.size <= 16 || relax || slots.length >= 2)) {
       const pair = pickRandomFarPair(free, false);
-      if (pair && slots.length < 4 && bindPair(pair.a._idx, pair.b._idx)) {
+      if (pair && slots.length < 3 && bindPair(pair.a._idx, pair.b._idx)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
           continue;
@@ -2313,10 +2311,7 @@ function deadRescueFill(tiles, rng, attempt) {
     globalThis.__rhythm = { fail: 'left', rem: rem.size, slots: slots.length };
     return null;
   }
-  if (forceParks < Math.max(4, Math.round(n / 28))) {
-    globalThis.__rhythm = { fail: 'parks', forceParks: forceParks };
-    return null;
-  }
+  // 客户端卡槽：第 4 张不同花色立即失败，强制大量停牌与规则冲突，不再因 parks 不足拒收
 
   // 完整性
   for (let i = 0; i < n; i++) if (!assigned[i]) { globalThis.__rhythm = { fail: 'orphan' }; return null; }
@@ -2368,13 +2363,13 @@ function deadRescueFill(tiles, rng, attempt) {
     if (hit) { slG.splice(slG.indexOf(assigned[hit._idx]), 1); boardG.delete(hit._idx); continue; }
     let pair = null;
     Object.keys(gBy).forEach(function (k) { if (!pair && gBy[k].length >= 2) pair = gBy[k]; });
-    if (pair && slG.length < 4) { boardG.delete(pair[0]._idx); boardG.delete(pair[1]._idx); continue; }
-    if (slG.length >= 4 || !fr.length) break;
+    if (pair && slG.length < 3) { boardG.delete(pair[0]._idx); boardG.delete(pair[1]._idx); continue; }
+    if (slG.length >= 3 || !fr.length) break;
     fr.sort(function (a, b) { return b.layer - a.layer; });
     slG.push(assigned[fr[0]._idx]);
     boardG.delete(fr[0]._idx);
   }
-  const greedyNeed = Math.floor(n * 0.58);
+  const greedyNeed = Math.floor(n * 0.50);
   if (boardG.size < greedyNeed) {
     globalThis.__rhythm = { fail: 'greedy', left: boardG.size, need: greedyNeed, forceParks: forceParks };
     return null;
@@ -2453,11 +2448,16 @@ function verifySolution(tiles, solution) {
     if (!tile) return { ok: false, reason: '牌 ' + step.tileId + ' 不在场' };
     const vis = visiblePlayTiles(rem);
     if (!playerClickable(tile, vis)) return { ok: false, reason: '牌 ' + step.tileId + ' 当时不能拿' };
+    // 入槽后先配对；无配对且槽满（默认 4 张不同花色）立即失败——与客户端一致
+    const cap = solution.slotCapacity || 4;
     const at = slots.indexOf(tile.typeId);
-    if (at >= 0) slots.splice(at, 1);
-    else {
-      if (slots.length >= (solution.slotCapacity || 4)) return { ok: false, reason: '第 ' + (i + 1) + ' 步卡槽已满' };
+    if (at >= 0) {
+      slots.splice(at, 1);
+    } else {
       slots.push(tile.typeId);
+      if (slots.length >= cap) {
+        return { ok: false, reason: '第 ' + (i + 1) + ' 步卡槽已满（4 张不同花色）' };
+      }
     }
     rem.delete(tile.id);
     seen.add(step.tileId);
@@ -2500,7 +2500,7 @@ function reshufflePlayLevel(level, attempt, rng) {
     playable.push(t);
   });
   if (!playable.length || playable.length % 2) return null;
-  const tries = Math.max(80, Math.min(200, Math.round(playable.length / 2)));
+  const tries = Math.max(120, Math.min(280, Math.round(playable.length * 0.75)));
   let accepted = null;
   let lastFail = null;
   for (let k = 0; k < tries && !accepted; k++) {
@@ -2600,7 +2600,7 @@ function forwardEliminable(arr) {
   return true;
 }
 
-// 与正式客户端一致：紧邻上层遮挡；同层左右半格夹击
+// 任意更高层重叠即不可点；同层左右半格夹击不可点
 // std 坐标：row=上下(纵)，col=左右(横)。左右夹住 = col±2 且 abs(row)<2。
 function isClickable(tile, all) {
   if (all.some(o => o !== tile && covers(o, tile))) return false;
@@ -2661,7 +2661,7 @@ function assignDarkTiles(tiles, rng, options) {
 // ============ 难度评估（含暗钩子权重 + 钩子稀缺度） ============
 // 判断单张牌是否被埋:任意埋法(上压 / 左右夹)都算
 function isTileBuried(tile, allTiles) {
-  // 与 isClickable 同口径：仅紧邻上层算上压，或同层左右半格夹击
+  // 与 isClickable 同口径：任意更高层上压，或同层左右半格夹击
   if (allTiles.some(other => other !== tile && other.id !== tile.id && covers(other, tile))) return true;
   const sameLayer = allTiles.filter(t => t.layer === tile.layer && t.id !== tile.id);
   const hasLeft = sameLayer.some(t => t.col === tile.col - 2 && Math.abs(t.row - tile.row) < 2);
