@@ -7,7 +7,6 @@ const path = require('path');
 
 const root = __dirname; // 脚本所在目录 = 仓库根目录
 const port = parseInt(process.argv[2] || process.env.PORT || '9002', 10);
-const { validateLevel } = require('./daily-editor/lib/validation.cjs');
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -21,34 +20,9 @@ const mime = {
   '.txt':  'text/plain; charset=utf-8',
 };
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); }
-      catch (e) { reject(e); }
-    });
-    req.on('error', reject);
-  });
-}
-
-http.createServer(async (req, res) => {
+http.createServer((req, res) => {
   let u;
   try { u = decodeURIComponent(req.url.split('?')[0]); } catch (_) { res.writeHead(400); res.end('400'); return; }
-
-  if (u === '/daily-editor/api/validate' && req.method === 'POST') {
-    try {
-      const body = await readBody(req);
-      const result = validateLevel(body.level, true);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result));
-    } catch (e) {
-      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: false, error: String(e.message || e) }));
-    }
-    return;
-  }
 
   if (u === '/') { u = '/index.html'; }
   const fp = path.join(root, u);
@@ -75,8 +49,7 @@ http.createServer(async (req, res) => {
   console.log('  🀄  麻将消一消 编辑器已启动');
   console.log('  ──────────────────────────────');
   console.log('  首页:      http://localhost:' + port + '/');
-  console.log('  旧版编辑器: http://localhost:' + port + '/editor/');
-  console.log('  每日编辑器: http://localhost:' + port + '/daily-editor/');
+  console.log('  关卡编辑器: http://localhost:' + port + '/editor/');
   console.log('  工作台:    http://localhost:' + port + '/workbench.html');
   console.log('  游戏 demo: http://localhost:' + port + '/demo/');
   console.log('');
