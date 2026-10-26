@@ -1866,10 +1866,18 @@ function rhythmFill(tiles, rng, attempt) {
  * 死局优先：先随机铺死局花色，再沿一条「边走边配」的窄走廊最小改线救活。
  * 走廊推进时同步写 script，避免回放对不上。
  */
-function deadRescueFill(tiles, rng, attempt) {
+function deadRescueFill(tiles, rng, attempt, opts) {
   attempt = attempt | 0;
+  opts = opts || {};
   const n = tiles.length;
   if (n < 8 || n % 2) return null;
+  // nearBudget: 允许的同花 tooClose 组数；默认 0（能不贴就不贴）
+  const nearBudget = opts.nearBudget != null ? (opts.nearBudget | 0) : 0;
+  // 解法后段（剩余牌 ≤35%）当面可消对数均值上限，越低后期越难
+  const lateEasyMax = opts.lateEasyMax != null ? +opts.lateEasyMax : 1.05;
+  const minParks = opts.minParks != null
+    ? (opts.minParks | 0)
+    : Math.max(1, Math.min(6, Math.floor(n / 50)));
   const items = tiles.map(function (t, idx) {
     return {
       layer: +t.layer, row: +t.row, col: +t.col, _idx: idx,
@@ -1942,6 +1950,10 @@ function deadRescueFill(tiles, rng, attempt) {
     if (dl === 0 && cheb <= 2) return true;
     return false;
   }
+  // 玩家体感「贴着」：同层且切比雪夫 ≤2
+  function sameLayerNear(a, b) {
+    return a.layer === b.layer && Math.max(Math.abs(a.row - b.row), Math.abs(a.col - b.col)) <= 2;
+  }
 
   // ----- Phase A: 随机死局配对 -----
   const dead = new Array(n).fill(0);
@@ -1998,8 +2010,9 @@ function deadRescueFill(tiles, rng, attempt) {
     for (let i = 0; i < n; i++) if (i !== idx && assigned[i] === s) return i;
     return -1;
   }
-  function takeSuit(a, b, prefer) {
+  function takeSuit(a, b, prefer, preferReuse) {
     if (stacked(items[a], items[b])) return 0;
+    if (sameLayerNear(items[a], items[b]) && nearBudget <= 0) return 0;
     recount();
     const orderS = [];
     if (prefer && prefer >= 1 && prefer <= TYPE_COUNT) orderS.push(prefer);
@@ -2011,30 +2024,42 @@ function deadRescueFill(tiles, rng, attempt) {
       for (let i = 0; i < rest.length; i++) orderS[i + 1] = rest[i];
     }
     let best = 0;
-    let bestC = 999;
+    let bestC = preferReuse ? -1 : 999;
+    // 大关前期允许多几对同花；后期仍受 stacked/同层贴靠约束
+    const softCap = preferReuse ? (n >= 120 ? 12 : 10) : 8;
+    const hardCap = preferReuse ? (n >= 120 ? 14 : 12) : 10;
     for (let pass = 0; pass < 3 && !best; pass++) {
       for (let i = 0; i < orderS.length; i++) {
         const s = orderS[i];
         const c = suitCount[s] || 0;
-        if (c + 2 > (pass >= 2 ? 10 : 8)) continue;
+        if (c + 2 > (pass >= 2 ? hardCap : softCap)) continue;
         let bad = false;
         for (let k = 0; k < n && !bad; k++) {
           if (assigned[k] !== s) continue;
           if (stacked(items[k], items[a]) || stacked(items[k], items[b])) bad = true;
-          else if (pass === 0 && (tooClose(items[k], items[a]) || tooClose(items[k], items[b]))) bad = true;
+          else if (sameLayerNear(items[k], items[a]) || sameLayerNear(items[k], items[b])) {
+            // 默认禁同层贴靠；soft 兜底在 pass>=1 放行
+            if (nearBudget <= 0 || pass < 1) bad = true;
+          } else if (pass === 0 && (tooClose(items[k], items[a]) || tooClose(items[k], items[b]))) {
+            // 跨层过近：仅第一档规避，避免过严导致生成失败
+            bad = true;
+          }
         }
         if (bad) continue;
-        // 死局同花优先
         if (prefer && s === prefer) return s;
-        if (c < bestC) { bestC = c; best = s; if (c === 0 && !prefer) break; }
+        if (preferReuse) {
+          if (c > bestC) { bestC = c; best = s; }
+        } else if (c < bestC) {
+          bestC = c; best = s; if (c === 0 && !prefer) break;
+        }
       }
     }
     return best;
   }
-  function bindPair(a, b) {
+  function bindPair(a, b, preferReuse) {
     if (assigned[a] || assigned[b]) return 0;
     const prefer = (dead[a] && dead[a] === dead[b]) ? dead[a] : 0;
-    const s = takeSuit(a, b, prefer);
+    const s = takeSuit(a, b, prefer, !!preferReuse);
     if (!s) return 0;
     assigned[a] = assigned[b] = s;
     suitCount[s] = (suitCount[s] || 0) + 2;
@@ -2042,6 +2067,19 @@ function deadRescueFill(tiles, rng, attempt) {
     if (prefer && s === prefer) baitMarks++;
     else baitMarks++;
     return s;
+  }
+  function unbindPair(a, b) {
+    const s = assigned[a];
+    if (!s || assigned[b] !== s) return;
+    assigned[a] = assigned[b] = 0;
+    suitCount[s] = (suitCount[s] || 0) - 2;
+    if (suitCount[s] <= 0) delete suitCount[s];
+    for (let i = pairs.length - 1; i >= 0; i--) {
+      if ((pairs[i][0] === a && pairs[i][1] === b) || (pairs[i][0] === b && pairs[i][1] === a)) {
+        pairs.splice(i, 1);
+        break;
+      }
+    }
   }
   function pick(id) {
     if (!isFreeIdx(rem, id, -1)) return false;
@@ -2127,13 +2165,14 @@ function deadRescueFill(tiles, rng, attempt) {
     }
     return -1;
   }
-  // 先强制做出至少 2 组开局当面可消（远距候选随机）
+  // 先强制做出至少 2 组开局当面可消（远距候选随机；前期复用同花，多几对放前期）
   while (guard++ < n && openingMade < Math.max(2, openingCap)) {
     const batch = clickableIn(rem).filter(function (t) { return initialFree.has(t._idx); });
     if (batch.length < 2) break;
     const best = pickRandomFarPair(batch, true) || pickRandomFarPair(batch, false);
-    if (!best || !bindPair(best.a._idx, best.b._idx)) break;
+    if (!best || !bindPair(best.a._idx, best.b._idx, true)) break;
     if (!pick(best.a._idx) || !pick(best.b._idx)) {
+      unbindPair(best.a._idx, best.b._idx);
       globalThis.__rhythm = { fail: 'open-pick' };
       return null;
     }
@@ -2146,8 +2185,11 @@ function deadRescueFill(tiles, rng, attempt) {
     const batch = clickableIn(rem);
     if (batch.length < 2) break;
     const best = pickRandomFarPair(batch, removed < easyTarget * 0.6) || pickRandomFarPair(batch, false);
-    if (!best || !bindPair(best.a._idx, best.b._idx)) break;
-    if (!pick(best.a._idx) || !pick(best.b._idx)) break;
+    if (!best || !bindPair(best.a._idx, best.b._idx, true)) break;
+    if (!pick(best.a._idx) || !pick(best.b._idx)) {
+      unbindPair(best.a._idx, best.b._idx);
+      break;
+    }
     script.push(['p', best.a._idx, best.b._idx]);
     removed += 2;
     sweep();
@@ -2164,20 +2206,15 @@ function deadRescueFill(tiles, rng, attempt) {
     const free = clickableIn(rem);
     if (!free.length) { globalThis.__rhythm = { fail: 'nofree', rem: rem.size }; return null; }
 
-    // 卡槽有空位时当面消一对；槽内已有 3 张不同花色时只能靠配对进槽
-    if (slots.length < 3 && free.length >= 2) {
-      const pair = pickRandomFarPair(free, false);
-      if (pair && bindPair(pair.a._idx, pair.b._idx)) {
-        if (pick(pair.a._idx) && pick(pair.b._idx)) {
-          script.push(['p', pair.a._idx, pair.b._idx]);
-          continue;
-        }
-      }
-    }
-
-    // 双停牌
+    // 缺停牌或中盘随机穿插停牌，避免永远 parks=0
+    const needMoreParks = forceParks < minParks;
+    const tryParkFirst = rem.size > 14 && slots.length < 3 && (
+      needMoreParks || (slots.length === 0 && rem.size > n * 0.35 && rng() < 0.4)
+    );
     let placed = false;
-    if (slots.length === 0 && free.length >= 2 && rem.size > 12 && doubleParks < Math.max(3, Math.round(n / 45))) {
+
+    // 双停牌（缺停牌时优先）
+    if (tryParkFirst && slots.length === 0 && free.length >= 2 && rem.size > 12 && doubleParks < Math.max(3, Math.round(n / 45))) {
       const pool = free.slice();
       shuffle(pool, rng);
       for (let i = 0; i < pool.length && !placed; i++) {
@@ -2228,8 +2265,17 @@ function deadRescueFill(tiles, rng, attempt) {
             }
           }
           if (!pa || !pb || pa._idx === pb._idx) continue;
-          if (!bindPair(a._idx, pa._idx) || !bindPair(b._idx, pb._idx)) continue;
-          if (!pick(a._idx) || !pick(b._idx)) continue;
+          if (!bindPair(a._idx, pa._idx) || !bindPair(b._idx, pb._idx)) {
+            if (assigned[a._idx]) unbindPair(a._idx, pa._idx);
+            if (assigned[b._idx]) unbindPair(b._idx, pb._idx);
+            continue;
+          }
+          if (!pick(a._idx) || !pick(b._idx)) {
+            // pick 失败时牌可能已部分入槽；回滚花色，走廊状态由上层失败处理
+            unbindPair(a._idx, pa._idx);
+            unbindPair(b._idx, pb._idx);
+            continue;
+          }
           script.push(['k', a._idx]);
           script.push(['k', b._idx]);
           forceParks += 2;
@@ -2240,10 +2286,10 @@ function deadRescueFill(tiles, rng, attempt) {
     }
     if (placed) continue;
 
-    // 单停牌：停一张，配埋牌（埋牌候选随机，并偏好死局伴侣）
-    const pool = free.slice();
-    shuffle(pool, rng);
-    if (slots.length < 3) {
+    // 单停牌（缺停牌时优先尝试）
+    if (!placed && tryParkFirst) {
+      const pool = free.slice();
+      shuffle(pool, rng);
       for (let i = 0; i < pool.length && !placed; i++) {
         const top = pool[i];
         const buried = items.filter(function (t) {
@@ -2269,7 +2315,6 @@ function deadRescueFill(tiles, rng, attempt) {
             buried.unshift(hit);
           }
         }
-        // 同埋深档里打乱，避免永远配同一张底牌
         buried.sort(function (a, b) {
           const ca = coversIn(rem, a).length;
           const cb = coversIn(rem, b).length;
@@ -2283,7 +2328,10 @@ function deadRescueFill(tiles, rng, attempt) {
         for (let oi = 0; oi < orderBi.length && !placed; oi++) {
           const partner = buried[orderBi[oi]];
           if (!bindPair(top._idx, partner._idx)) continue;
-          if (!pick(top._idx)) continue;
+          if (!pick(top._idx)) {
+            unbindPair(top._idx, partner._idx);
+            continue;
+          }
           script.push(['k', top._idx]);
           forceParks++;
           placed = true;
@@ -2292,15 +2340,50 @@ function deadRescueFill(tiles, rng, attempt) {
     }
     if (placed) continue;
 
-    // 末段或放松：当面一对
-    if (free.length >= 2 && (rem.size <= 16 || relax || slots.length >= 2)) {
+    // 当面消对（停牌尝试失败后的主路径）
+    if (slots.length < 3 && free.length >= 2) {
       const pair = pickRandomFarPair(free, false);
-      if (pair && slots.length < 3 && bindPair(pair.a._idx, pair.b._idx)) {
+      if (pair && bindPair(pair.a._idx, pair.b._idx, false)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
           continue;
         }
+        unbindPair(pair.a._idx, pair.b._idx);
       }
+    }
+
+    // 末段或放松：再试当面一对 / 放宽后的单停牌
+    if (!placed && slots.length < 3 && free.length >= 2 && (rem.size <= 16 || relax || slots.length >= 2)) {
+      const pair = pickRandomFarPair(free, false);
+      if (pair && bindPair(pair.a._idx, pair.b._idx, false)) {
+        if (pick(pair.a._idx) && pick(pair.b._idx)) {
+          script.push(['p', pair.a._idx, pair.b._idx]);
+          continue;
+        }
+        unbindPair(pair.a._idx, pair.b._idx);
+      }
+    }
+    if (!placed && relax && slots.length < 3) {
+      const pool2 = free.slice();
+      shuffle(pool2, rng);
+      for (let i = 0; i < pool2.length && !placed; i++) {
+        const top = pool2[i];
+        const buried = items.filter(function (t) {
+          return rem.has(t._idx) && !assigned[t._idx] && t._idx !== top._idx && !stacked(top, t);
+        });
+        shuffle(buried, rng);
+        for (let oi = 0; oi < Math.min(buried.length, 5) && !placed; oi++) {
+          if (!bindPair(top._idx, buried[oi]._idx)) continue;
+          if (!pick(top._idx)) {
+            unbindPair(top._idx, buried[oi]._idx);
+            continue;
+          }
+          script.push(['k', top._idx]);
+          forceParks++;
+          placed = true;
+        }
+      }
+      if (placed) continue;
     }
 
     if (!relax) { relax = true; continue; }
@@ -2311,7 +2394,10 @@ function deadRescueFill(tiles, rng, attempt) {
     globalThis.__rhythm = { fail: 'left', rem: rem.size, slots: slots.length };
     return null;
   }
-  // 客户端卡槽：第 4 张不同花色立即失败，强制大量停牌与规则冲突，不再因 parks 不足拒收
+  if (forceParks < minParks) {
+    globalThis.__rhythm = { fail: 'parks', forceParks: forceParks, need: minParks };
+    return null;
+  }
 
   // 完整性
   for (let i = 0; i < n; i++) if (!assigned[i]) { globalThis.__rhythm = { fail: 'orphan' }; return null; }
@@ -2322,12 +2408,19 @@ function deadRescueFill(tiles, rng, attempt) {
     return null;
   }
   let stackedHits = 0;
+  let nearHits = 0;
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      if (assigned[i] === assigned[j] && stacked(items[i], items[j])) stackedHits++;
+      if (assigned[i] !== assigned[j]) continue;
+      if (stacked(items[i], items[j])) stackedHits++;
+      else if (sameLayerNear(items[i], items[j])) nearHits++;
     }
   }
-  if (stackedHits) { globalThis.__rhythm = { fail: 'stack', stackedHits: stackedHits }; return null; }
+  if (stackedHits) { globalThis.__rhythm = { fail: 'stack', stackedHits: stackedHits, nearHits: nearHits }; return null; }
+  if (nearHits > nearBudget) {
+    globalThis.__rhythm = { fail: 'close', stackedHits: stackedHits, nearHits: nearHits, nearBudget: nearBudget };
+    return null;
+  }
 
   // 开局当面可消
   const openBy = {};
@@ -2369,21 +2462,65 @@ function deadRescueFill(tiles, rng, attempt) {
     slG.push(assigned[fr[0]._idx]);
     boardG.delete(fr[0]._idx);
   }
-  const greedyNeed = Math.floor(n * 0.50);
+  const greedyNeed = Math.floor(n * 0.52);
   if (boardG.size < greedyNeed) {
     globalThis.__rhythm = { fail: 'greedy', left: boardG.size, need: greedyNeed, forceParks: forceParks };
     return null;
   }
   const branchAvg = branchN ? branchSum / branchN : 99;
-  if (branchAvg > 2.1) {
+  if (branchAvg > 2.0) {
     globalThis.__rhythm = { fail: 'branchy', branchAvg: Math.round(branchAvg * 100) / 100, forceParks: forceParks };
+    return null;
+  }
+
+  // 沿解法回放：剩余牌 ≤35% 时当面可消对数均值过高 → 后期太水
+  const remL = new Set(items.map(function (t) { return t._idx; }));
+  const slotsL = [];
+  let lateFpSum = 0;
+  let lateFpN = 0;
+  function freePairCount(set) {
+    const fr = clickableIn(set);
+    const gBy = {};
+    fr.forEach(function (t) { (gBy[assigned[t._idx]] = gBy[assigned[t._idx]] || []).push(t); });
+    let fp = 0;
+    Object.keys(gBy).forEach(function (k) { if (gBy[k].length >= 2) fp++; });
+    return fp;
+  }
+  for (let si = 0; si < script.length; si++) {
+    if (remL.size <= n * 0.35 && remL.size > 0) {
+      lateFpSum += freePairCount(remL);
+      lateFpN++;
+    }
+    const step = script[si];
+    function applyPick(id) {
+      const s = assigned[id];
+      const at = slotsL.indexOf(s);
+      if (at >= 0) slotsL.splice(at, 1);
+      else slotsL.push(s);
+      remL.delete(id);
+    }
+    if (step[0] === 'p') {
+      applyPick(step[1]);
+      applyPick(step[2]);
+    } else {
+      applyPick(step[1]);
+    }
+  }
+  const lateFpAvg = lateFpN ? lateFpSum / lateFpN : 0;
+  if (lateFpN >= 4 && lateFpAvg > lateEasyMax) {
+    globalThis.__rhythm = {
+      fail: 'late-easy', lateFpAvg: Math.round(lateFpAvg * 100) / 100,
+      lateEasyMax: lateEasyMax, forceParks: forceParks
+    };
     return null;
   }
 
   globalThis.__rhythm = {
     attempt: attempt, mode: 'dead-rescue', opening: opening, spread: spread, easy: removed,
     forceParks: forceParks, doubleParks: doubleParks, bait: baitMarks, gates: doubleParks,
-    greedyLeft: boardG.size, branchAvg: Math.round(branchAvg * 100) / 100, dead: true
+    greedyLeft: boardG.size, branchAvg: Math.round(branchAvg * 100) / 100,
+    nearHits: nearHits, nearBudget: nearBudget, lateFpAvg: Math.round(lateFpAvg * 100) / 100,
+    dead: true
   };
   return { assigned: assigned, pairsPlaced: [], script: script };
 }
@@ -2500,45 +2637,101 @@ function reshufflePlayLevel(level, attempt, rng) {
     playable.push(t);
   });
   if (!playable.length || playable.length % 2) return null;
-  const tries = Math.max(120, Math.min(280, Math.round(playable.length * 0.75)));
+  const n = playable.length;
+  // 一次重开内部多试：先严后松，玩家无感
+  // 内部多试：大关大约 1～3 秒内找合格种子；优先 strict/soft，极少才 fallback
+  const strictTries = Math.max(500, Math.min(1600, Math.round(n * 5)));
+  const softTries = Math.max(250, Math.min(700, Math.round(n * 2.8)));
+  const fallbackTries = Math.max(200, Math.min(600, Math.round(n * 2.2)));
+  // soft/fallback 同层贴靠上限：约牌对数的 5%
+  const softNear = Math.max(1, Math.min(6, Math.ceil((n / 2) * 0.05)));
+  const passes = [
+    {
+      label: 'strict',
+      tries: strictTries,
+      opts: {
+        nearBudget: 0,
+        lateEasyMax: 1.35,
+        minParks: Math.max(1, Math.min(5, Math.floor(n / 55)))
+      }
+    },
+    {
+      label: 'soft',
+      tries: softTries,
+      opts: {
+        nearBudget: Math.max(1, Math.min(softNear, 3)),
+        lateEasyMax: 1.55,
+        minParks: 1
+      }
+    },
+    {
+      // 极少数兜底：保生成成功；仍限同层贴靠
+      label: 'fallback',
+      tries: fallbackTries,
+      opts: {
+        nearBudget: softNear,
+        lateEasyMax: 2.0,
+        minParks: 0
+      }
+    }
+  ];
   let accepted = null;
   let lastFail = null;
-  for (let k = 0; k < tries && !accepted; k++) {
-    const result = deadRescueFill(playable, makeRng((Math.floor(rng() * 1e9) + k * 97) >>> 0), 1);
-    if (!result || !result.script || !result.assigned) {
-      lastFail = (globalThis.__rhythm && globalThis.__rhythm.fail) || 'fill';
-      continue;
+  let outerTries = 0;
+  let usedPass = 'strict';
+  for (let pi = 0; pi < passes.length && !accepted; pi++) {
+    const pass = passes[pi];
+    usedPass = pass.label;
+    for (let k = 0; k < pass.tries && !accepted; k++) {
+      outerTries++;
+      const result = deadRescueFill(
+        playable,
+        makeRng((Math.floor(rng() * 1e9) + outerTries * 97) >>> 0),
+        1,
+        pass.opts
+      );
+      if (!result || !result.script || !result.assigned) {
+        lastFail = (globalThis.__rhythm && globalThis.__rhythm.fail) || 'fill';
+        continue;
+      }
+      let p = 0;
+      tiles.forEach(function (t) {
+        if (t.type === 'spitter') return;
+        t.typeId = result.assigned[p++];
+      });
+      const tally = {};
+      playable.forEach(function (t) { tally[t.typeId] = (tally[t.typeId] || 0) + 1; });
+      if (Object.keys(tally).some(function (kk) { return tally[kk] % 2 !== 0; })) {
+        lastFail = 'odd';
+        continue;
+      }
+      const solution = solutionFromScript(playable, result.script);
+      if (!solution.steps || solution.steps.length !== playable.length) {
+        lastFail = 'steps';
+        continue;
+      }
+      const check = verifySolution(tiles, solution);
+      if (!check.ok) {
+        lastFail = 'verify:' + (check.reason || '');
+        globalThis.__rhythm = Object.assign({}, globalThis.__rhythm || {}, { fail: 'verify', reason: check.reason });
+        continue;
+      }
+      accepted = {
+        solution: solution,
+        rhythm: globalThis.__rhythm,
+        tries: outerTries,
+        pass: usedPass
+      };
     }
-    let p = 0;
-    tiles.forEach(function (t) {
-      if (t.type === 'spitter') return;
-      t.typeId = result.assigned[p++];
-    });
-    const tally = {};
-    playable.forEach(function (t) { tally[t.typeId] = (tally[t.typeId] || 0) + 1; });
-    if (Object.keys(tally).some(function (k) { return tally[k] % 2 !== 0; })) {
-      lastFail = 'odd';
-      continue;
-    }
-    const solution = solutionFromScript(playable, result.script);
-    if (!solution.steps || solution.steps.length !== playable.length) {
-      lastFail = 'steps';
-      continue;
-    }
-    const check = verifySolution(tiles, solution);
-    if (!check.ok) {
-      lastFail = 'verify:' + (check.reason || '');
-      globalThis.__rhythm = Object.assign({}, globalThis.__rhythm || {}, { fail: 'verify', reason: check.reason });
-      continue;
-    }
-    // 二次确认：步骤必须清空盘面（verify 已查，这里再记日志）
-    accepted = { solution: solution, rhythm: globalThis.__rhythm };
   }
   if (!accepted) {
-    globalThis.__rhythm = { fail: 'no-verified', lastFail: lastFail, tries: tries };
+    globalThis.__rhythm = {
+      fail: 'no-verified', lastFail: lastFail,
+      tries: strictTries + softTries, outerTries: outerTries
+    };
     return null;
   }
-  const out = Object.assign({}, level, { tiles: tiles, solution: accepted.solution });
+  const out = Object.assign({}, level, { tiles: tiles, solution: accepted.solution, tries: accepted.tries });
   delete out._rhythmAttempt;
   const darkIds = new Set();
   tiles.forEach(function (t) { if (t.isDark) darkIds.add(t.id); });
@@ -2546,7 +2739,9 @@ function reshufflePlayLevel(level, attempt, rng) {
   if (accepted.rhythm) {
     globalThis.__rhythm = Object.assign({}, accepted.rhythm, {
       verified: true,
-      steps: accepted.solution.steps.length
+      steps: accepted.solution.steps.length,
+      outerTries: accepted.tries,
+      pass: accepted.pass
     });
   }
   return out;
