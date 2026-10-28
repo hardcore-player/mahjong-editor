@@ -707,6 +707,15 @@
         </div>
         <button class="sbtn block" onclick="batchGenerate()">⚡ 批量生成</button>
 
+        <div class="card-sub">日挑战花色种子池（嵌进 JSON）</div>
+        <div class="field-row">
+          <span>颗数</span>
+          <input type="number" id="faceSeedCount" value="100" min="1" max="300" style="width:64px;">
+        </div>
+        <div class="hint">与预览同款洗牌：验过即可入库（合格）；其中 strict 标为优秀。开局/重开先抽优秀，用尽再抽合格。改牌位后须重算。</div>
+        <button class="sbtn primary block" id="faceSeedBtn" onclick="buildFaceSeedPoolForCurrent()">🌱 生成花色种子池</button>
+        <button class="sbtn block" id="faceSeedCancelBtn" onclick="cancelFaceSeedPoolJob()" style="display:none;">⏹ 停止种子池</button>
+
         <div class="status-box"><span id="genStatus">就绪</span></div>
       </div>
     </div>
@@ -727,6 +736,10 @@
       <div class="gh-item">
         <div class="gh-title">暗牌总数</div>
         <div class="gh-desc">暗牌占总牌数的比例。0% = 无暗牌（也不会有暗钩）。暗钩 = 这些暗牌里，标在钩子被埋牌上的那部分（由"暗钩比例"决定）。</div>
+      </div>
+      <div class="gh-item">
+        <div class="gh-title">日挑战花色种子池</div>
+        <div class="gh-desc">离线预计算约 100 颗花色（与预览同款验过即可入库；约 20 颗优秀、其余合格）。嵌进 faceSeeds。开局/重开优先抽优秀。打乱后官方路径作废，提示改为当前可消对。</div>
       </div>
     </div>
     <div class="gen-help-pop" id="scoreHelpPop">
@@ -3541,7 +3554,111 @@ function generateStackFromCurrent() {
 function downloadCurrentLevel() {
   if (!currentLevel) return;
   const d = currentLevel._difficulty;
-  GEN.downloadJSON(currentLevel, `level_${Date.now()}_${d.score}.json`);
+  // 有种子池时导出「几何 + faceSeeds」形态（typeId 清空，开局再抽）
+  let payload = currentLevel;
+  if (Array.isArray(currentLevel.faceSeeds) && currentLevel.faceSeeds.length > 0) {
+    payload = GEN.attachFaceSeedPoolToLevel(
+      currentLevel,
+      currentLevel.faceSeeds,
+      currentLevel.faceSeedGeoKey || GEN.faceSeedGeoKey(currentLevel.tiles)
+    );
+  }
+  const seedN = Array.isArray(payload.faceSeeds) ? payload.faceSeeds.length : 0;
+  const name = seedN
+    ? `level_${Date.now()}_${d?.score ?? 0}分_${seedN}seeds.json`
+    : `level_${Date.now()}_${d?.score ?? 0}.json`;
+  GEN.downloadJSON(payload, name);
+}
+
+let _faceSeedJob = null;
+function cancelFaceSeedPoolJob() {
+  if (_faceSeedJob && typeof _faceSeedJob.cancel === 'function') _faceSeedJob.cancel();
+  _faceSeedJob = null;
+  const btn = document.getElementById('faceSeedBtn');
+  const cancelBtn = document.getElementById('faceSeedCancelBtn');
+  if (btn) btn.disabled = false;
+  if (cancelBtn) cancelBtn.style.display = 'none';
+}
+function buildFaceSeedPoolForCurrent() {
+  const base = currentLevel || (resultsList[activeResultIdx] || null);
+  if (!base || !base.tiles || !base.tiles.length) {
+    setGenStatus('<span class="bad">请先生成或选中一关，再算花色种子池</span>');
+    return;
+  }
+  if (_faceSeedJob) {
+    setGenStatus('<span class="warn">种子池正在生成，可点「停止」</span>');
+    return;
+  }
+  const countEl = document.getElementById('faceSeedCount');
+  const target = Math.max(1, Math.min(300, parseInt(countEl && countEl.value, 10) || GEN.FACE_SEED_POOL_DEFAULT));
+  const btn = document.getElementById('faceSeedBtn');
+  const cancelBtn = document.getElementById('faceSeedCancelBtn');
+  if (btn) btn.disabled = true;
+  if (cancelBtn) cancelBtn.style.display = '';
+  setGenStatus('花色种子池生成中… 0/' + target + '（合格即可入库）');
+  const t0 = Date.now();
+  _faceSeedJob = GEN.generateFaceSeedPoolAsync(base, target, {
+    chunkAttempts: 1,
+    onProgress: function (p) {
+      setGenStatus(
+        '花色种子池… ' + p.have + '/' + p.target +
+        '（优秀 ' + (p.excellent || 0) + ' · 合格 ' + (p.qualified || 0) +
+        ' · 轮次 ' + p.attempts + '）'
+      );
+    },
+    onDone: function (res) {
+      _faceSeedJob = null;
+      if (btn) btn.disabled = false;
+      if (cancelBtn) cancelBtn.style.display = 'none';
+      const q = GEN.countFaceSeedQuality(res.faceSeeds || []);
+      if (res.cancelled) {
+        if (res.faceSeeds && res.faceSeeds.length) {
+          base.faceSeeds = res.faceSeeds;
+          base.faceSeedGeoKey = res.geoKey;
+          base.playTag = GEN.DAILY_CHALLENGE_FACE_PLAY_TAG;
+          currentLevel = base;
+          if (playBase) {
+            playBase.faceSeeds = res.faceSeeds;
+            playBase.faceSeedGeoKey = res.geoKey;
+            playBase.playTag = GEN.DAILY_CHALLENGE_FACE_PLAY_TAG;
+          }
+          setGenStatus(
+            '<span class="warn">已停止 · 保留 ' + res.faceSeeds.length +
+            ' 颗（优秀 ' + q.excellent + ' · 合格 ' + q.qualified + '）</span>'
+          );
+        } else {
+          setGenStatus('<span class="warn">已停止 · 未产出种子</span>');
+        }
+        return;
+      }
+      if (!res.faceSeeds || !res.faceSeeds.length) {
+        setGenStatus('<span class="bad">种子池失败：未能产出合格花色（可再试）</span>');
+        return;
+      }
+      base.faceSeeds = res.faceSeeds;
+      base.faceSeedGeoKey = res.geoKey;
+      base.playTag = GEN.DAILY_CHALLENGE_FACE_PLAY_TAG;
+      currentLevel = base;
+      // 同步进预览底座，否则点重开仍会走现场洗牌（卡住数秒）
+      if (playBase) {
+        playBase.faceSeeds = res.faceSeeds;
+        playBase.faceSeedGeoKey = res.geoKey;
+        playBase.playTag = GEN.DAILY_CHALLENGE_FACE_PLAY_TAG;
+      }
+      const srcIdx = resultsList.indexOf(base);
+      if (srcIdx >= 0) {
+        resultsList[srcIdx] = base;
+        renderResults();
+      }
+      const sec = Math.round((Date.now() - t0) / 1000);
+      setGenStatus(
+        '<span class="good">✓ 花色种子池 ' + res.faceSeeds.length + '/' + res.target +
+        ' · 优秀 ' + q.excellent + ' · 合格 ' + q.qualified +
+        ' · 耗时 ' + sec + 's · 下载将嵌进 faceSeeds · 预览重开将秒抽</span>'
+      );
+      toast('种子池就绪：' + res.faceSeeds.length + ' 颗（优秀 ' + q.excellent + '）', 'ok');
+    }
+  });
 }
 
 function showPreview() {
@@ -3683,9 +3800,7 @@ function saveCurrentLevelToWorkbench(btn) {
   btn.disabled = true;
   btn.textContent = '保存中…';
   setWorkbenchStatus('保存中…', '');
-  workbenchApi('', {
-    method: 'POST',
-    body: JSON.stringify({
+  const wbPayload = {
       name,
       tiles: currentLevel.tiles,
       specialTiles: currentLevel.specialTiles,
@@ -3694,7 +3809,21 @@ function saveCurrentLevelToWorkbench(btn) {
       _difficulty: currentLevel._difficulty,
       order,
       playTimeMs: currentLevel.playTimeMs || null,  // 试玩耗时（通关后自动记录）
-    }),
+    };
+  if (Array.isArray(currentLevel.faceSeeds) && currentLevel.faceSeeds.length) {
+    const packed = GEN.attachFaceSeedPoolToLevel(
+      currentLevel,
+      currentLevel.faceSeeds,
+      currentLevel.faceSeedGeoKey || GEN.faceSeedGeoKey(currentLevel.tiles)
+    );
+    wbPayload.tiles = packed.tiles;
+    wbPayload.faceSeeds = packed.faceSeeds;
+    wbPayload.faceSeedGeoKey = packed.faceSeedGeoKey;
+    wbPayload.playTag = packed.playTag;
+  }
+  workbenchApi('', {
+    method: 'POST',
+    body: JSON.stringify(wbPayload),
   }).then(data => {
     btn.textContent = '已保存 ✓';
     setWorkbenchStatus('保存成功：' + name + '（「📋 工作台」页可管理全部关卡）', 'connected');
@@ -3887,7 +4016,7 @@ function renderResults() {
     return `<div class="result-item${active}" onclick="previewResult(${i})">
       <span class="ri-idx">#${i + 1}</span>
       <span class="ri-score">${d.score ?? '?'}分</span>
-      <span class="ri-meta">${lv.tiles.length}张/${lv.totalPairs}对 · ${(d.maxLayer ?? 0) + 1}层</span>
+      <span class="ri-meta">${lv.tiles.length}张/${lv.totalPairs}对 · ${(d.maxLayer ?? 0) + 1}层${Array.isArray(lv.faceSeeds) && lv.faceSeeds.length ? ' · 🌱' + lv.faceSeeds.length : ''}</span>
       <span class="ri-actions" onclick="event.stopPropagation()">
         <button class="primary" onclick="previewResult(${i})">预览</button>
         <button onclick="downloadResult(${i})">下载</button>
@@ -3912,7 +4041,19 @@ function previewResult(i) {
 function downloadResult(i) {
   const lv = resultsList[i];
   if (!lv) return;
-  GEN.downloadJSON(lv, `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`);
+  let payload = lv;
+  if (Array.isArray(lv.faceSeeds) && lv.faceSeeds.length > 0) {
+    payload = GEN.attachFaceSeedPoolToLevel(
+      lv,
+      lv.faceSeeds,
+      lv.faceSeedGeoKey || GEN.faceSeedGeoKey(lv.tiles)
+    );
+  }
+  const seedN = Array.isArray(payload.faceSeeds) ? payload.faceSeeds.length : 0;
+  const name = seedN
+    ? `level_${lv._difficulty?.score ?? 0}分_#${i + 1}_${seedN}seeds.json`
+    : `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`;
+  GEN.downloadJSON(payload, name);
 }
 
 function downloadAllResults() {
@@ -4506,8 +4647,31 @@ function clonePlayLevel(level) {
     manualSuits: !!level.manualSuits,
     leafCover: !!level.leafCover,
     leafLayers: Array.isArray(level.leafLayers) ? level.leafLayers.slice() : null,
-    _difficulty: level._difficulty
+    _difficulty: level._difficulty,
+    faceSeeds: Array.isArray(level.faceSeeds) ? level.faceSeeds.slice() : null,
+    faceSeedGeoKey: level.faceSeedGeoKey || null,
+    playTag: level.playTag || null
   };
+}
+/** 预览开局：有 faceSeeds 则随机抽一颗；否则走旧 reshuffle */
+function pickPreviewPlayLevel(base, avoidSeed) {
+  if (base && Array.isArray(base.faceSeeds) && base.faceSeeds.length > 0) {
+    const geoNow = GEN.faceSeedGeoKey(base.tiles);
+    if (base.faceSeedGeoKey && base.faceSeedGeoKey !== geoNow) {
+      setGenStatus('<span class="bad">种子池与当前牌位不一致，请重新「生成花色种子池」</span>');
+      return null;
+    }
+    const entry = GEN.pickRandomFaceSeedEntry(base.faceSeeds, avoidSeed);
+    if (!entry) return null;
+    const played = GEN.applyFaceSeedToLevel(base, entry);
+    if (!played) {
+      setGenStatus('<span class="bad">应用种子失败（tileId 对不上）</span>');
+      return null;
+    }
+    played._previewFaceSeed = entry.seed;
+    return played;
+  }
+  return reshuffleUntilVerified(base, 0x9e3779b9);
 }
 function deliverPreview(level) {
   if (!demoAvailable) {
@@ -4564,31 +4728,85 @@ function reshuffleUntilVerified(base, seedXor) {
   }
   return null;
 }
+/** 把最新种子池挂到 playBase（池可能在首次预览之后才生成） */
+function syncPlayBaseFaceSeedsFromSources() {
+  if (!playBase) return;
+  const candidates = [];
+  if (currentLevel) candidates.push(currentLevel);
+  if (typeof resultsList !== 'undefined' && activeResultIdx >= 0) {
+    const lv = resultsList[activeResultIdx];
+    if (lv) candidates.push(lv);
+  }
+  for (let i = 0; i < candidates.length; i++) {
+    const src = candidates[i];
+    if (Array.isArray(src.faceSeeds) && src.faceSeeds.length > 0) {
+      playBase.faceSeeds = src.faceSeeds;
+      playBase.faceSeedGeoKey = src.faceSeedGeoKey || GEN.faceSeedGeoKey(playBase.tiles);
+      playBase.playTag = src.playTag || GEN.DAILY_CHALLENGE_FACE_PLAY_TAG;
+      return;
+    }
+  }
+}
 function onPreviewRestart() {
   const base = playBase || (currentLevel ? clonePlayLevel(currentLevel) : null);
   if (!base) return;
   playBase = base;
-  const played = reshuffleUntilVerified(playBase, 0x51f15e);
+  syncPlayBaseFaceSeedsFromSources();
+  const avoid = currentLevel && currentLevel._previewFaceSeed != null
+    ? currentLevel._previewFaceSeed
+    : null;
+  const fromPool = Array.isArray(playBase.faceSeeds) && playBase.faceSeeds.length > 0;
+  const played = pickPreviewPlayLevel(playBase, avoid);
   if (!played || !played.solution) {
-    setGenStatus('重开洗牌失败：没有验证通过的通关路径，请再点一次');
+    setGenStatus(
+      fromPool
+        ? '重开抽种子失败，请再点一次'
+        : '重开洗牌失败：没有验证通过的通关路径，请再点一次'
+    );
     return;
   }
+  // 保留池子在 playBase；currentLevel 是本局展示用
+  played.faceSeeds = playBase.faceSeeds;
+  played.faceSeedGeoKey = playBase.faceSeedGeoKey;
   currentLevel = played;
   showPreview();
   deliverPreview(played);
+  if (fromPool && played._previewFaceSeed != null) {
+    const q = GEN.countFaceSeedQuality(playBase.faceSeeds);
+    setGenStatus(
+      '秒抽种子 #' + played._previewFaceSeed +
+      ' · 池 ' + playBase.faceSeeds.length +
+      '（优秀 ' + q.excellent + ' · 合格 ' + q.qualified + '）'
+    );
+  }
 }
 sendLevelToPreview = function (level) {
   playAttempt = 0;
   playBase = clonePlayLevel(level);
-  const played = reshuffleUntilVerified(playBase, 0x9e3779b9);
+  // 预览底座保留种子池；若 level 已带池，不要被 reshuffle 冲掉
+  if (Array.isArray(level.faceSeeds) && level.faceSeeds.length) {
+    playBase.faceSeeds = level.faceSeeds;
+    playBase.faceSeedGeoKey = level.faceSeedGeoKey || GEN.faceSeedGeoKey(level.tiles);
+    playBase.playTag = level.playTag || GEN.DAILY_CHALLENGE_FACE_PLAY_TAG;
+  }
+  const played = pickPreviewPlayLevel(playBase, null);
   if (!played || !played.solution) {
-    setGenStatus('洗牌失败：没有验证通过的通关路径（不会下发无解关卡）');
+    setGenStatus(
+      Array.isArray(playBase.faceSeeds) && playBase.faceSeeds.length
+        ? '抽种子失败（不会下发无解关卡）'
+        : '洗牌失败：没有验证通过的通关路径（不会下发无解关卡）'
+    );
     return;
   }
-  const srcIdx = (typeof resultsList !== 'undefined') ? resultsList.indexOf(level) : -1;
-  if (srcIdx >= 0) {
-    resultsList[srcIdx] = played;
-    if (typeof renderResults === 'function') renderResults();
+  played.faceSeeds = playBase.faceSeeds;
+  played.faceSeedGeoKey = playBase.faceSeedGeoKey;
+  // 有种子池时不要把「某一颗」写回 resultsList 冲掉池子
+  if (!(Array.isArray(level.faceSeeds) && level.faceSeeds.length)) {
+    const srcIdx = (typeof resultsList !== 'undefined') ? resultsList.indexOf(level) : -1;
+    if (srcIdx >= 0) {
+      resultsList[srcIdx] = played;
+      if (typeof renderResults === 'function') renderResults();
+    }
   }
   currentLevel = played;
   deliverPreview(played);

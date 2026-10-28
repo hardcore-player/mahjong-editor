@@ -2010,7 +2010,7 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     for (let i = 0; i < n; i++) if (i !== idx && assigned[i] === s) return i;
     return -1;
   }
-  function takeSuit(a, b, prefer, preferReuse) {
+  function takeSuit(a, b, prefer) {
     if (stacked(items[a], items[b])) return 0;
     if (sameLayerNear(items[a], items[b]) && nearBudget <= 0) return 0;
     recount();
@@ -2024,10 +2024,10 @@ function deadRescueFill(tiles, rng, attempt, opts) {
       for (let i = 0; i < rest.length; i++) orderS[i + 1] = rest[i];
     }
     let best = 0;
-    let bestC = preferReuse ? -1 : 999;
-    // 大关前期允许多几对同花；后期仍受 stacked/同层贴靠约束
-    const softCap = preferReuse ? (n >= 120 ? 12 : 10) : 8;
-    const hardCap = preferReuse ? (n >= 120 ? 14 : 12) : 10;
+    let bestC = 999;
+    // 大关可多几对同花，但始终优先分散（低计数），禁止往同一色猛堆
+    const softCap = n >= 160 ? 10 : (n >= 100 ? 8 : 8);
+    const hardCap = n >= 160 ? 12 : 10;
     for (let pass = 0; pass < 3 && !best; pass++) {
       for (let i = 0; i < orderS.length; i++) {
         const s = orderS[i];
@@ -2038,28 +2038,24 @@ function deadRescueFill(tiles, rng, attempt, opts) {
           if (assigned[k] !== s) continue;
           if (stacked(items[k], items[a]) || stacked(items[k], items[b])) bad = true;
           else if (sameLayerNear(items[k], items[a]) || sameLayerNear(items[k], items[b])) {
-            // 默认禁同层贴靠；soft 兜底在 pass>=1 放行
             if (nearBudget <= 0 || pass < 1) bad = true;
           } else if (pass === 0 && (tooClose(items[k], items[a]) || tooClose(items[k], items[b]))) {
-            // 跨层过近：仅第一档规避，避免过严导致生成失败
             bad = true;
           }
         }
         if (bad) continue;
         if (prefer && s === prefer) return s;
-        if (preferReuse) {
-          if (c > bestC) { bestC = c; best = s; }
-        } else if (c < bestC) {
+        if (c < bestC) {
           bestC = c; best = s; if (c === 0 && !prefer) break;
         }
       }
     }
     return best;
   }
-  function bindPair(a, b, preferReuse) {
+  function bindPair(a, b) {
     if (assigned[a] || assigned[b]) return 0;
     const prefer = (dead[a] && dead[a] === dead[b]) ? dead[a] : 0;
-    const s = takeSuit(a, b, prefer, !!preferReuse);
+    const s = takeSuit(a, b, prefer);
     if (!s) return 0;
     assigned[a] = assigned[b] = s;
     suitCount[s] = (suitCount[s] || 0) + 2;
@@ -2165,12 +2161,12 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     }
     return -1;
   }
-  // 先强制做出至少 2 组开局当面可消（远距候选随机；前期复用同花，多几对放前期）
+  // 先强制做出至少 2 组开局当面可消（远距；花色分散，不往同一色猛堆）
   while (guard++ < n && openingMade < Math.max(2, openingCap)) {
     const batch = clickableIn(rem).filter(function (t) { return initialFree.has(t._idx); });
     if (batch.length < 2) break;
     const best = pickRandomFarPair(batch, true) || pickRandomFarPair(batch, false);
-    if (!best || !bindPair(best.a._idx, best.b._idx, true)) break;
+    if (!best || !bindPair(best.a._idx, best.b._idx)) break;
     if (!pick(best.a._idx) || !pick(best.b._idx)) {
       unbindPair(best.a._idx, best.b._idx);
       globalThis.__rhythm = { fail: 'open-pick' };
@@ -2185,7 +2181,7 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     const batch = clickableIn(rem);
     if (batch.length < 2) break;
     const best = pickRandomFarPair(batch, removed < easyTarget * 0.6) || pickRandomFarPair(batch, false);
-    if (!best || !bindPair(best.a._idx, best.b._idx, true)) break;
+    if (!best || !bindPair(best.a._idx, best.b._idx)) break;
     if (!pick(best.a._idx) || !pick(best.b._idx)) {
       unbindPair(best.a._idx, best.b._idx);
       break;
@@ -2206,10 +2202,13 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     const free = clickableIn(rem);
     if (!free.length) { globalThis.__rhythm = { fail: 'nofree', rem: rem.size }; return null; }
 
-    // 缺停牌或中盘随机穿插停牌，避免永远 parks=0
+    // 剩牌越少越优先停牌，把难度压到后段（约剩 1/2～1/3）
     const needMoreParks = forceParks < minParks;
+    const lateHalf = rem.size <= n * 0.55;
     const tryParkFirst = rem.size > 14 && slots.length < 3 && (
-      needMoreParks || (slots.length === 0 && rem.size > n * 0.35 && rng() < 0.4)
+      needMoreParks ||
+      (lateHalf && slots.length === 0 && rng() < 0.45) ||
+      (slots.length === 0 && rem.size > n * 0.35 && rng() < 0.22)
     );
     let placed = false;
 
@@ -2340,10 +2339,10 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     }
     if (placed) continue;
 
-    // 当面消对（停牌尝试失败后的主路径）
+    // 当面消对：后段先尝试停牌，失败后再消对（避免走廊卡死）
     if (slots.length < 3 && free.length >= 2) {
       const pair = pickRandomFarPair(free, false);
-      if (pair && bindPair(pair.a._idx, pair.b._idx, false)) {
+      if (pair && bindPair(pair.a._idx, pair.b._idx)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
           continue;
@@ -2355,7 +2354,7 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     // 末段或放松：再试当面一对 / 放宽后的单停牌
     if (!placed && slots.length < 3 && free.length >= 2 && (rem.size <= 16 || relax || slots.length >= 2)) {
       const pair = pickRandomFarPair(free, false);
-      if (pair && bindPair(pair.a._idx, pair.b._idx, false)) {
+      if (pair && bindPair(pair.a._idx, pair.b._idx)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
           continue;
@@ -2462,22 +2461,53 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     slG.push(assigned[fr[0]._idx]);
     boardG.delete(fr[0]._idx);
   }
-  const greedyNeed = Math.floor(n * 0.52);
+  // 中期不再刻意卡死：贪心残留门槛放宽，难度交给后 1/3
+  const greedyNeed = Math.floor(n * 0.18);
   if (boardG.size < greedyNeed) {
     globalThis.__rhythm = { fail: 'greedy', left: boardG.size, need: greedyNeed, forceParks: forceParks };
     return null;
   }
   const branchAvg = branchN ? branchSum / branchN : 99;
-  if (branchAvg > 2.0) {
+  if (branchAvg > 2.8) {
     globalThis.__rhythm = { fail: 'branchy', branchAvg: Math.round(branchAvg * 100) / 100, forceParks: forceParks };
     return null;
   }
 
-  // 沿解法回放：剩余牌 ≤35% 时当面可消对数均值过高 → 后期太水
+  // 开局可点区：禁止同花糊成一两坨（观感单调）
+  const openMaxFreePerSuit = opts.openMaxFreePerSuit != null ? (opts.openMaxFreePerSuit | 0) : 2;
+  const openMinSuits = opts.openMinSuits != null ? (opts.openMinSuits | 0) : 3;
+  const openFree = clickableIn(new Set(items.map(function (t) { return t._idx; })));
+  const openBySuit = {};
+  openFree.forEach(function (t) {
+    const s = assigned[t._idx];
+    openBySuit[s] = (openBySuit[s] || 0) + 1;
+  });
+  let openSuitN = 0;
+  let openMaxOne = 0;
+  Object.keys(openBySuit).forEach(function (k) {
+    openSuitN++;
+    if (openBySuit[k] > openMaxOne) openMaxOne = openBySuit[k];
+  });
+  if (openFree.length >= 6 && openSuitN < openMinSuits) {
+    globalThis.__rhythm = { fail: 'open-mono', openSuitN: openSuitN, need: openMinSuits, freeN: openFree.length };
+    return null;
+  }
+  if (openMaxOne > openMaxFreePerSuit) {
+    globalThis.__rhythm = {
+      fail: 'open-clump', openMaxOne: openMaxOne, cap: openMaxFreePerSuit, freeN: openFree.length
+    };
+    return null;
+  }
+
+  // 沿解法回放：剩约 1/3 时限制当面可消宽度 + 要求后段不能净靠消对
   const remL = new Set(items.map(function (t) { return t._idx; }));
   const slotsL = [];
   let lateFpSum = 0;
   let lateFpN = 0;
+  let latePeakFp = 0;
+  let latePSteps = 0;
+  let lateOtherSteps = 0;
+  const thirdN = Math.max(8, Math.floor(n / 3));
   function freePairCount(set) {
     const fr = clickableIn(set);
     const gBy = {};
@@ -2487,9 +2517,12 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     return fp;
   }
   for (let si = 0; si < script.length; si++) {
-    if (remL.size <= n * 0.35 && remL.size > 0) {
-      lateFpSum += freePairCount(remL);
+    const inLate = remL.size <= thirdN && remL.size > 0;
+    if (inLate) {
+      const fp = freePairCount(remL);
+      lateFpSum += fp;
       lateFpN++;
+      if (fp > latePeakFp) latePeakFp = fp;
     }
     const step = script[si];
     function applyPick(id) {
@@ -2500,9 +2533,11 @@ function deadRescueFill(tiles, rng, attempt, opts) {
       remL.delete(id);
     }
     if (step[0] === 'p') {
+      if (inLate) latePSteps++;
       applyPick(step[1]);
       applyPick(step[2]);
     } else {
+      if (inLate) lateOtherSteps++;
       applyPick(step[1]);
     }
   }
@@ -2510,7 +2545,25 @@ function deadRescueFill(tiles, rng, attempt, opts) {
   if (lateFpN >= 4 && lateFpAvg > lateEasyMax) {
     globalThis.__rhythm = {
       fail: 'late-easy', lateFpAvg: Math.round(lateFpAvg * 100) / 100,
-      lateEasyMax: lateEasyMax, forceParks: forceParks
+      lateEasyMax: lateEasyMax, latePeakFp: latePeakFp, forceParks: forceParks
+    };
+    return null;
+  }
+  const latePeakCap = opts.latePeakFp != null ? +opts.latePeakFp : 2;
+  if (lateFpN >= 4 && latePeakFp > latePeakCap) {
+    globalThis.__rhythm = {
+      fail: 'late-branch', latePeakFp: latePeakFp, latePeakCap: latePeakCap, lateFpAvg: Math.round(lateFpAvg * 100) / 100
+    };
+    return null;
+  }
+  // 后段若几乎全是当面消对，说明没有停牌挖埋压力
+  const lateStepN = latePSteps + lateOtherSteps;
+  const latePairRatioMax = opts.latePairRatioMax != null ? +opts.latePairRatioMax : 0.72;
+  const latePairRatio = lateStepN ? latePSteps / lateStepN : 0;
+  if (lateStepN >= 6 && latePairRatio > latePairRatioMax) {
+    globalThis.__rhythm = {
+      fail: 'late-pairy', latePairRatio: Math.round(latePairRatio * 100) / 100,
+      latePairRatioMax: latePairRatioMax, forceParks: forceParks
     };
     return null;
   }
@@ -2520,7 +2573,8 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     forceParks: forceParks, doubleParks: doubleParks, bait: baitMarks, gates: doubleParks,
     greedyLeft: boardG.size, branchAvg: Math.round(branchAvg * 100) / 100,
     nearHits: nearHits, nearBudget: nearBudget, lateFpAvg: Math.round(lateFpAvg * 100) / 100,
-    dead: true
+    latePeakFp: latePeakFp, latePairRatio: Math.round(latePairRatio * 100) / 100,
+    openSuitN: openSuitN, openMaxOne: openMaxOne, dead: true
   };
   return { assigned: assigned, pairsPlaced: [], script: script };
 }
@@ -2639,11 +2693,10 @@ function reshufflePlayLevel(level, attempt, rng) {
   if (!playable.length || playable.length % 2) return null;
   const n = playable.length;
   // 一次重开内部多试：先严后松，玩家无感
-  // 内部多试：大关大约 1～3 秒内找合格种子；优先 strict/soft，极少才 fallback
-  const strictTries = Math.max(500, Math.min(1600, Math.round(n * 5)));
-  const softTries = Math.max(250, Math.min(700, Math.round(n * 2.8)));
-  const fallbackTries = Math.max(200, Math.min(600, Math.round(n * 2.2)));
-  // soft/fallback 同层贴靠上限：约牌对数的 5%
+  // 后台种子库会囤合格结果；前台现算仍多试。曲线：前易 → 越往后越难，剩约 1/3 近死局
+  const strictTries = Math.max(300, Math.min(1000, Math.round(n * 3.5)));
+  const softTries = Math.max(300, Math.min(900, Math.round(n * 3)));
+  const fallbackTries = Math.max(250, Math.min(700, Math.round(n * 2.5)));
   const softNear = Math.max(1, Math.min(6, Math.ceil((n / 2) * 0.05)));
   const passes = [
     {
@@ -2652,7 +2705,11 @@ function reshufflePlayLevel(level, attempt, rng) {
       opts: {
         nearBudget: 0,
         lateEasyMax: 1.35,
-        minParks: Math.max(1, Math.min(5, Math.floor(n / 55)))
+        latePeakFp: 2,
+        latePairRatioMax: 0.78,
+        minParks: Math.max(1, Math.min(5, Math.floor(n / 50))),
+        openMaxFreePerSuit: 2,
+        openMinSuits: 3
       }
     },
     {
@@ -2660,18 +2717,26 @@ function reshufflePlayLevel(level, attempt, rng) {
       tries: softTries,
       opts: {
         nearBudget: Math.max(1, Math.min(softNear, 3)),
-        lateEasyMax: 1.55,
-        minParks: 1
+        lateEasyMax: 1.6,
+        latePeakFp: 3,
+        latePairRatioMax: 0.88,
+        minParks: 0,
+        openMaxFreePerSuit: 2,
+        openMinSuits: 3
       }
     },
     {
-      // 极少数兜底：保生成成功；仍限同层贴靠
+      // 冷启动保底：保证能开局；品质偏低，尽量不入库
       label: 'fallback',
       tries: fallbackTries,
       opts: {
         nearBudget: softNear,
-        lateEasyMax: 2.0,
-        minParks: 0
+        lateEasyMax: 2.4,
+        latePeakFp: 5,
+        latePairRatioMax: 1.0,
+        minParks: 0,
+        openMaxFreePerSuit: 3,
+        openMinSuits: 2
       }
     }
   ];
@@ -2727,11 +2792,16 @@ function reshufflePlayLevel(level, attempt, rng) {
   if (!accepted) {
     globalThis.__rhythm = {
       fail: 'no-verified', lastFail: lastFail,
-      tries: strictTries + softTries, outerTries: outerTries
+      tries: strictTries + softTries + fallbackTries, outerTries: outerTries
     };
     return null;
   }
-  const out = Object.assign({}, level, { tiles: tiles, solution: accepted.solution, tries: accepted.tries });
+  const out = Object.assign({}, level, {
+    tiles: tiles,
+    solution: accepted.solution,
+    tries: accepted.tries,
+    quality: accepted.pass
+  });
   delete out._rhythmAttempt;
   const darkIds = new Set();
   tiles.forEach(function (t) { if (t.isDark) darkIds.add(t.id); });
@@ -2741,9 +2811,269 @@ function reshufflePlayLevel(level, attempt, rng) {
       verified: true,
       steps: accepted.solution.steps.length,
       outerTries: accepted.tries,
-      pass: accepted.pass
+      pass: accepted.pass,
+      quality: accepted.pass
     });
   }
+  return out;
+}
+
+/**
+ * 日挑战花色种子池：默认 100 颗。
+ * 入库门槛 = 预览同款 reshufflePlayLevel 验过即可（合格）；
+ * strict → excellent，soft/fallback → qualified。开局优先抽优秀。
+ */
+var FACE_SEED_POOL_DEFAULT = 100;
+var FACE_SEED_EXCELLENT_TARGET = 20;
+var DAILY_CHALLENGE_FACE_PLAY_TAG = 'daily-challenge-faces';
+
+function playableTilesInOrder(tiles) {
+  const list = [];
+  (tiles || []).forEach(function (t) {
+    if (t && t.type !== 'spitter') list.push(t);
+  });
+  list.sort(function (a, b) { return (a.id | 0) - (b.id | 0); });
+  return list;
+}
+
+/** 几何指纹：改牌位后旧池必须整池作废重算 */
+function faceSeedGeoKey(tiles) {
+  const parts = playableTilesInOrder(tiles).map(function (t) {
+    return (t.id | 0) + ':' + (t.layer | 0) + ':' + (t.row | 0) + ':' + (t.col | 0);
+  });
+  return parts.join('|');
+}
+
+function faceSeedQualityFromPass(pass) {
+  return pass === 'strict' ? 'excellent' : 'qualified';
+}
+
+function countFaceSeedQuality(faceSeeds) {
+  var excellent = 0;
+  var qualified = 0;
+  (faceSeeds || []).forEach(function (e) {
+    if (e && e.quality === 'excellent') excellent++;
+    else qualified++;
+  });
+  return { excellent: excellent, qualified: qualified };
+}
+
+/**
+ * 生成 1 颗可入库种子：与预览「按当前形状」同一条 reshufflePlayLevel 路径。
+ * 验过即可入库；strict=优秀，其余=合格。
+ */
+function tryBuildFaceSeed(level, seedU32) {
+  if (!level || !level.tiles) return null;
+  const seedBase = (seedU32 >>> 0) || 1;
+  const out = reshufflePlayLevel(level, 1, makeRng(seedBase));
+  if (!out || !out.solution || !out.tiles) return null;
+  const pass = out.quality || (globalThis.__rhythm && globalThis.__rhythm.pass) || 'soft';
+  const ordered = playableTilesInOrder(out.tiles);
+  if (!ordered.length || ordered.some(function (t) { return t.typeId == null; })) return null;
+  if (!out.solution.steps || out.solution.steps.length !== ordered.length) return null;
+  const rhythm = Object.assign({}, globalThis.__rhythm || {});
+  return {
+    seed: seedBase,
+    quality: faceSeedQualityFromPass(pass),
+    geoKey: faceSeedGeoKey(out.tiles),
+    tileIds: ordered.map(function (t) { return t.id | 0; }),
+    typeIds: ordered.map(function (t) { return t.typeId | 0; }),
+    solution: out.solution,
+    rhythm: {
+      lateFpAvg: rhythm.lateFpAvg,
+      latePeakFp: rhythm.latePeakFp,
+      latePairRatio: rhythm.latePairRatio,
+      parks: rhythm.forceParks != null ? rhythm.forceParks : rhythm.parks,
+      pass: pass,
+      tries: out.tries != null ? out.tries : rhythm.outerTries
+    },
+    tries: out.tries != null ? out.tries : 1
+  };
+}
+
+/** @deprecated 兼容旧名；现改为合格即可入库 */
+function tryBuildExcellentFaceSeed(level, seedU32) {
+  return tryBuildFaceSeed(level, seedU32);
+}
+
+/** 把种子花色写回 level 副本（预览 / 导出当前局） */
+function applyFaceSeedToLevel(level, entry) {
+  if (!level || !entry || !Array.isArray(entry.tileIds) || !Array.isArray(entry.typeIds)) return null;
+  if (entry.tileIds.length !== entry.typeIds.length) return null;
+  const tiles = (level.tiles || []).map(function (t) { return Object.assign({}, t); });
+  const byId = new Map();
+  for (let i = 0; i < entry.tileIds.length; i++) {
+    byId.set(entry.tileIds[i] | 0, entry.typeIds[i] | 0);
+  }
+  let applied = 0;
+  tiles.forEach(function (t) {
+    if (t.type === 'spitter') return;
+    const ty = byId.get(t.id | 0);
+    if (ty != null) {
+      t.typeId = ty;
+      applied++;
+    }
+  });
+  if (applied !== entry.tileIds.length) return null;
+  const out = Object.assign({}, level, {
+    tiles: tiles,
+    solution: entry.solution,
+    faceSeedApplied: entry.seed,
+    playTag: level.playTag || DAILY_CHALLENGE_FACE_PLAY_TAG
+  });
+  if (Array.isArray(level.faceSeeds)) out.faceSeeds = level.faceSeeds;
+  return out;
+}
+
+/**
+ * 开局/重开抽种子：先在优秀里随机（避开上一颗），优秀用尽再抽合格。
+ */
+function pickRandomFaceSeedEntry(faceSeeds, avoidSeed) {
+  if (!Array.isArray(faceSeeds) || faceSeeds.length === 0) return null;
+  if (faceSeeds.length === 1) return faceSeeds[0];
+  function filterAvoid(list) {
+    if (avoidSeed == null) return list;
+    const filtered = list.filter(function (e) { return e && e.seed !== avoidSeed; });
+    return filtered.length ? filtered : list;
+  }
+  const excellent = filterAvoid(faceSeeds.filter(function (e) {
+    return e && e.quality === 'excellent';
+  }));
+  const pool = excellent.length
+    ? excellent
+    : filterAvoid(faceSeeds);
+  const idx = Math.floor(Math.random() * pool.length);
+  return pool[idx] || null;
+}
+
+/**
+ * 同步批量：目标 count 颗（合格即可；其中尽量多收优秀）。
+ */
+function generateFaceSeedPool(level, count, opts) {
+  opts = opts || {};
+  const target = Math.max(1, Math.min(500, (count != null ? count : FACE_SEED_POOL_DEFAULT) | 0));
+  const maxWallAttempts = opts.maxWallAttempts != null
+    ? (opts.maxWallAttempts | 0)
+    : target * 8;
+  const seeds = [];
+  const seenTypeSig = new Set();
+  let wall = 0;
+  const baseRng = makeRng(((opts.seed != null ? opts.seed : Date.now()) >>> 0) || 1);
+  while (seeds.length < target && wall < maxWallAttempts) {
+    wall++;
+    const seedU32 = (Math.floor(baseRng() * 0xffffffff) ^ (wall * 9973)) >>> 0;
+    const entry = tryBuildFaceSeed(level, seedU32 || wall);
+    if (!entry) continue;
+    const sig = entry.typeIds.join(',');
+    if (seenTypeSig.has(sig)) continue;
+    seenTypeSig.add(sig);
+    seeds.push(entry);
+    if (typeof opts.onProgress === 'function') {
+      const q = countFaceSeedQuality(seeds);
+      opts.onProgress({
+        have: seeds.length, target: target, attempts: wall,
+        excellent: q.excellent, qualified: q.qualified
+      });
+    }
+  }
+  const q = countFaceSeedQuality(seeds);
+  return {
+    faceSeeds: seeds,
+    geoKey: faceSeedGeoKey(level.tiles),
+    target: target,
+    attempts: wall,
+    excellent: q.excellent,
+    qualified: q.qualified,
+    ok: seeds.length >= Math.min(target, 1)
+  };
+}
+
+/**
+ * 分帧批量。每次 tick 跑 1 次 reshufflePlayLevel（与预览同量级，约数秒一颗）。
+ */
+function generateFaceSeedPoolAsync(level, count, opts) {
+  opts = opts || {};
+  const target = Math.max(1, Math.min(500, (count != null ? count : FACE_SEED_POOL_DEFAULT) | 0));
+  // 每次 reshuffle 本身已含大量内试；每帧只跑 1 颗，避免卡死
+  const chunkAttempts = opts.chunkAttempts != null ? Math.max(1, opts.chunkAttempts | 0) : 1;
+  const maxWallAttempts = opts.maxWallAttempts != null
+    ? (opts.maxWallAttempts | 0)
+    : target * 8;
+  const seeds = [];
+  const seenTypeSig = new Set();
+  let wall = 0;
+  let cancelled = false;
+  const baseRng = makeRng(((opts.seed != null ? opts.seed : Date.now()) >>> 0) || 1);
+  const geoKey = faceSeedGeoKey(level.tiles);
+
+  function finish() {
+    if (typeof opts.onDone === 'function') {
+      const q = countFaceSeedQuality(seeds);
+      opts.onDone({
+        faceSeeds: seeds,
+        geoKey: geoKey,
+        target: target,
+        attempts: wall,
+        excellent: q.excellent,
+        qualified: q.qualified,
+        ok: seeds.length > 0,
+        cancelled: cancelled
+      });
+    }
+  }
+
+  function tick() {
+    if (cancelled) {
+      finish();
+      return;
+    }
+    let local = 0;
+    while (local < chunkAttempts && seeds.length < target && wall < maxWallAttempts) {
+      local++;
+      wall++;
+      const seedU32 = (Math.floor(baseRng() * 0xffffffff) ^ (wall * 9973)) >>> 0;
+      const entry = tryBuildFaceSeed(level, seedU32 || wall);
+      if (!entry) continue;
+      const sig = entry.typeIds.join(',');
+      if (seenTypeSig.has(sig)) continue;
+      seenTypeSig.add(sig);
+      seeds.push(entry);
+    }
+    if (typeof opts.onProgress === 'function') {
+      const q = countFaceSeedQuality(seeds);
+      opts.onProgress({
+        have: seeds.length, target: target, attempts: wall,
+        excellent: q.excellent, qualified: q.qualified
+      });
+    }
+    if (seeds.length >= target || wall >= maxWallAttempts || cancelled) {
+      finish();
+      return;
+    }
+    setTimeout(tick, 0);
+  }
+
+  setTimeout(tick, 0);
+  return {
+    cancel: function () { cancelled = true; }
+  };
+}
+
+function attachFaceSeedPoolToLevel(level, faceSeeds, geoKey) {
+  if (!level) return null;
+  const out = Object.assign({}, level);
+  out.faceSeeds = (faceSeeds || []).slice();
+  out.faceSeedGeoKey = geoKey || faceSeedGeoKey(level.tiles);
+  out.playTag = DAILY_CHALLENGE_FACE_PLAY_TAG;
+  // 导出给客户端时不要绑死某一颗：开局再随机抽
+  delete out.solution;
+  delete out.faceSeedApplied;
+  // 清掉展示用 typeId，避免误以为 JSON 自带固定花色
+  out.tiles = (level.tiles || []).map(function (t) {
+    const c = Object.assign({}, t);
+    if (c.type !== 'spitter') c.typeId = null;
+    return c;
+  });
   return out;
 }
 
@@ -3909,6 +4239,14 @@ function computeMinSlots(tiles) {
     NAMES: NAMES, DARK_RATIO_MIN: DARK_RATIO_MIN, DARK_RATIO_MAX: DARK_RATIO_MAX, DARK_WEIGHT: DARK_WEIGHT,
     makeRng: makeRng, shuffle: shuffle, covers: covers, isClickable: isClickable,
     desiredClickRatio: desiredClickRatio, backwardFill: backwardFill, backwardFillPinned: backwardFillPinned, pinConstraintError: pinConstraintError, KEY_SUIT: KEY_SUIT, verifyByElimination: verifyByElimination, assignDarkTiles: assignDarkTiles, evaluateDifficulty: evaluateDifficulty, reshufflePlayLevel: reshufflePlayLevel, rhythmFill: rhythmFill, deadRescueFill: deadRescueFill, verifySolution: verifySolution,
+    FACE_SEED_POOL_DEFAULT: FACE_SEED_POOL_DEFAULT,
+    FACE_SEED_EXCELLENT_TARGET: FACE_SEED_EXCELLENT_TARGET,
+    DAILY_CHALLENGE_FACE_PLAY_TAG: DAILY_CHALLENGE_FACE_PLAY_TAG,
+    faceSeedGeoKey: faceSeedGeoKey, tryBuildFaceSeed: tryBuildFaceSeed,
+    tryBuildExcellentFaceSeed: tryBuildExcellentFaceSeed, countFaceSeedQuality: countFaceSeedQuality,
+    applyFaceSeedToLevel: applyFaceSeedToLevel, pickRandomFaceSeedEntry: pickRandomFaceSeedEntry,
+    generateFaceSeedPool: generateFaceSeedPool, generateFaceSeedPoolAsync: generateFaceSeedPoolAsync,
+    attachFaceSeedPoolToLevel: attachFaceSeedPoolToLevel,
     fillEditorShape: fillEditorShape, generateAndFill: generateAndFill, generateStackFromShape: generateStackFromShape, downloadJSON: downloadJSON,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
