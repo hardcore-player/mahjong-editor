@@ -623,6 +623,7 @@ function animateDiscFade() {
 }
 
 // 上方任意更高层足迹重叠即压住；左右夹住 = 同层 col±2 且 abs(row)<2。
+// 同层半重叠（|Δcol|===1）不算上压、也不算左右邻接——与客户端 ALLOW_SAME_LAYER_FOOTPRINT_OVERLAP 一致。
 function isClickable(tile, allTiles) {
   // spitter 本体:仅要求不被上层牌压住,左右夹住不算(本身是装饰物,允许任意位置被点)
   if (tile.type === 'spitter') {

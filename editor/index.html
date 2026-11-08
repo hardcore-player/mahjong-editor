@@ -529,7 +529,6 @@
   <div class="tb-group">
     <div class="chip on" id="symToggle" onclick="toggleSym()" title="快捷键 S"><span class="dot"></span>对称</div>
     <div class="chip on" id="allToggle" onclick="toggleAll()" title="快捷键 A"><span class="dot"></span>全部层</div>
-    <div class="chip on" id="snapToggle" onclick="toggleSnap()" title="上层牌必须 4 象限都有支撑"><span class="dot"></span>支撑限制</div>
     <div class="chip on" id="gridToggle" onclick="toggleGrid()"><span class="dot"></span>网格</div>
     <div class="chip" id="coordToggle" onclick="toggleCoord()"><span class="dot"></span>坐标</div>
     <div class="chip" id="typeIdToggle" onclick="toggleTypeId()" title="显示每一张普通牌的牌面 Type ID(导入关卡时保留)"><span class="dot"></span>牌面ID</div>
@@ -712,7 +711,7 @@
           <span>颗数</span>
           <input type="number" id="faceSeedCount" value="100" min="1" max="300" style="width:64px;">
         </div>
-        <div class="hint">与预览同款洗牌：验过即可入库（合格）；其中 strict 标为优秀。开局/重开先抽优秀，用尽再抽合格。改牌位后须重算。</div>
+        <div class="hint">与预览同款洗牌：验过即可入库（合格）；strict=优秀。前期3～4牺牲色+2债orphan必进槽（搭档埋到约后25%）；中期生死牌生牌去盖后仍左右双堵。贪心应卡在中后分界。生成池：同串早停+几何缓存+Worker提速（合格线不变）。改牌位后须重算；页面卡顿可刷新再生成。</div>
         <button class="sbtn primary block" id="faceSeedBtn" onclick="buildFaceSeedPoolForCurrent()">🌱 生成花色种子池</button>
         <button class="sbtn block" id="faceSeedCancelBtn" onclick="cancelFaceSeedPoolJob()" style="display:none;">⏹ 停止种子池</button>
 
@@ -739,7 +738,7 @@
       </div>
       <div class="gh-item">
         <div class="gh-title">日挑战花色种子池</div>
-        <div class="gh-desc">离线预计算约 100 颗花色（与预览同款验过即可入库；约 20 颗优秀、其余合格）。嵌进 faceSeeds。开局/重开优先抽优秀。打乱后官方路径作废，提示改为当前可消对。</div>
+        <div class="gh-desc">离线预计算约 100 颗花色。前期牺牲色+2债必进槽（搭档很晚才露）；中期生死牌（生牌去盖后仍侧堵，偷看也点不了）+障碍进槽。贪心卡中后分界、解法仍通。strict→优秀，其余→合格；开局优先抽优秀。</div>
       </div>
     </div>
     <div class="gen-help-pop" id="scoreHelpPop">
@@ -1401,7 +1400,7 @@
       <div class="sep2"></div>
       <span>当前 <b id="sbLayer">L0</b></span>
       <div class="sep2"></div>
-      <span class="status-support" id="sbSupport" title="点击高亮悬空牌">支撑 <b id="sbSupportText">—</b></span>
+      <span class="status-support" id="sbSupport" title="点击高亮悬空牌（上层须至少 1 个象限有下层支撑）">支撑 <b id="sbSupportText">—</b></span>
       <div class="sep2"></div>
       <span id="sbCounts">普通 <b>0</b> · 暗 <b>0</b> · 吐 <b>0</b> · 共 <b>0</b></span>
       <div class="status-spacer"></div>
@@ -1487,7 +1486,7 @@
 </div>
 
 <script src="manual-rules.js"></script>
-<script src="generator.js?v=559"></script>
+<script src="generator.js?v=561"></script>
 <script>
 // ========== 配置：编辑器坐标显示范围 ==========
 // 横向固定 12 个子格 = 6 个麻将位（每张牌占 2 子格）
@@ -1498,6 +1497,8 @@ const GRID_ROWS = 16;  // 画布行数（牌区高：16 子格 = 8 麻将位）
 const CELL = 40;       // 每格世界像素（缩放前）
 const TILE = 2;        // 每张牌占 2×2 格
 const BOARD_PAD = 6;   // 棋盘四周留白（世界像素）
+/** 本地实验：允许同层 2×2 足迹半重叠。false = 恢复原互斥。勿推 Git。 */
+const ALLOW_SAME_LAYER_FOOTPRINT_OVERLAP = true;
 
 // 每层颜色（俯视平铺色块，浅色底适配）
 const LAYER_COLORS = [
@@ -1521,7 +1522,6 @@ let state = {
   spitterCount: 2,
   symmetric: true,
   showAll: true,
-  snapToSupport: true,
   showGrid: true,
   showCoord: false,
   showTypeId: false, // 显示普通牌的牌面 Type ID(导入时保留)
@@ -2367,7 +2367,8 @@ canvas.addEventListener('mousedown', e => {
     }
     return;
   }
-  if (!state.hoverCell.valid && state.snapToSupport && state.currentLayer > 0) return;
+  // 上层：正下方至少 1 个象限有支撑才能放（不可关闭）
+  if (!state.hoverCell.valid && state.currentLayer > 0) return;
 
   // 吐牌机画笔:再次点击已存在的吐牌机 → 直接消除(像普通牌那样,点已存在的就擦除)
   // 只在 spitter 画笔下生效
@@ -2449,7 +2450,7 @@ canvas.addEventListener('mousemove', e => {
   }
 
   if (state.painting) {
-    if (state.hoverCell && (state.hoverCell.valid || !state.snapToSupport || state.currentLayer === 0)) {
+    if (state.hoverCell && (state.hoverCell.valid || state.currentLayer === 0)) {
       paintAt(state.hoverCell.col, state.hoverCell.row);
     }
   } else {
@@ -2506,8 +2507,8 @@ function tileOccupiesCells(key) {
 }
 
 function isPlaceable(layer, key) {
-  // 同一行最多 6 个麻将（横向 12 子格 / 2 格宽）
-  const MAX_PER_ROW = 6;
+  // 允许重叠时半格插缝会更密，放宽同行上限
+  const MAX_PER_ROW = ALLOW_SAME_LAYER_FOOTPRINT_OVERLAP ? 12 : 6;
   const [newRow] = key.split(',').map(Number);
   let rowCount = 0;
   for (const existingKey of Object.keys(layer.tiles)) {
@@ -2517,17 +2518,16 @@ function isPlaceable(layer, key) {
   if (rowCount >= MAX_PER_ROW && !layer.tiles[key]) {
     return false;
   }
+  // 本地实验：允许同层 2×2 半重叠（同坐标由 paintAt 覆盖/替换）
+  if (ALLOW_SAME_LAYER_FOOTPRINT_OVERLAP) {
+    return true;
+  }
   const newCells = tileOccupiesCells(key);
   for (const existingKey of Object.keys(layer.tiles)) {
     if (existingKey === key) continue;
     const t = layer.tiles[existingKey];
-    // 同层 spitter 占 1 子格,会被新普通牌的 2x2 范围覆盖 — 允许替换(后面 paintAt 会处理)
-    // 其他普通牌/暗牌才需要检查 2x2 重叠
+    // 同层 spitter 不参与占地互斥
     if (t.type === 'spitter') {
-      const tCells = new Set([existingKey]); // spitter 只占 1 个子格(即它的 key)
-      // 检查 spitter 子格是否被新普通牌的 2x2 子格完全包含(允许覆盖);否则允许(邻接不重叠)
-      // 实际上邻接不重叠就是 ok,只需要确认新普通牌的子格不会与 spitter 邻接冲突
-      // 简化:spitter 不参与 isPlaceable 检查,允许新普通牌放上
       continue;
     }
     const existCells = tileOccupiesCells(existingKey);
@@ -2882,16 +2882,23 @@ function bindChip(id, key, redraw) {
 }
 function toggleSym()  { bindChip('symToggle', 'symmetric', false); }
 function toggleAll()  { bindChip('allToggle', 'showAll', true); }
-function toggleSnap() { bindChip('snapToggle', 'snapToSupport', true); }
 function toggleGrid() { bindChip('gridToggle', 'showGrid', true); }
 function toggleCoord(){ bindChip('coordToggle', 'showCoord', true); }
 function toggleTypeId(){ bindChip('typeIdToggle', 'showTypeId', true); }
 
-// ========== 支撑问题（象限规则） ==========
-// 规则：上层牌 4 个象限（左上/右上/左下/右下）的中心子格，
-// 每个子格的正下方都必须有下层牌覆盖（可以是不同的下层牌）
+// ========== 支撑（象限规则，始终生效、不可关闭） ==========
+// 上层牌 2×2 四个象限里，正下方至少有 1 个被下层盖住即可放置。
 function quadCovered(lowerArr, r, c) {
   return lowerArr.some(lt => lt.row <= r && r < lt.row + 2 && lt.col <= c && c < lt.col + 2);
+}
+
+function countSupportedQuads(lowerArr, row, col) {
+  const quads = [[row, col], [row, col + 1], [row + 1, col], [row + 1, col + 1]];
+  let covered = 0;
+  quads.forEach(([r, c]) => {
+    if (quadCovered(lowerArr, r, c)) covered++;
+  });
+  return covered;
 }
 
 function findSupportIssues() {
@@ -2906,18 +2913,13 @@ function findSupportIssues() {
 
     Object.keys(upper).forEach(key => {
       const [ur, uc] = key.split(',').map(Number);
-      const quads = [[ur, uc], [ur, uc + 1], [ur + 1, uc], [ur + 1, uc + 1]];
-      let covered = 0;
-      quads.forEach(([r, c]) => {
-        if (quadCovered(lowerArr, r, c)) covered++;
-      });
-      if (covered < 4) issues.add(key);
+      if (countSupportedQuads(lowerArr, ur, uc) < 1) issues.add(key);
     });
   }
   return issues;
 }
 
-// 检查某个位置（指定层）是否有支撑（2x2 footprint 全部被下层覆盖）
+// 指定层该位置是否有支撑（≥1 象限被正下方一层覆盖）
 function hasSupportAtLayer(layerIndex, col, row) {
   if (layerIndex <= 0) return true; // 底层恒有支撑
   const lower = state.layers[layerIndex - 1].tiles;
@@ -2925,18 +2927,12 @@ function hasSupportAtLayer(layerIndex, col, row) {
     const [lr, lc] = k.split(',').map(Number);
     return { row: lr, col: lc };
   });
-  const quads = [[row, col], [row, col + 1], [row + 1, col], [row + 1, col + 1]];
-  let covered = 0;
-  quads.forEach(([r, c]) => {
-    if (quadCovered(lowerArr, r, c)) covered++;
-  });
-  return covered === 4;
+  return countSupportedQuads(lowerArr, row, col) >= 1;
 }
 
-// 检查某个位置（当前层）是否有支撑
+// 当前层悬停/放置用
 function hasSupportAt(col, row) {
   if (state.currentLayer === 0) return true;
-  if (!state.snapToSupport) return true;
   return hasSupportAtLayer(state.currentLayer, col, row);
 }
 
@@ -3355,7 +3351,7 @@ function stopPreviewTimer() {
 // file:// 直开时按仓库布局（工具包与 游戏Demo 同级）取相对路径
 function getDemoUrl() {
   if (location.protocol === 'file:') return '../游戏Demo/game_demo_std.html';
-  return '/demo/index.html?v=520';
+  return '/demo/index.html?v=521';
 }
 
 function showDemoMissing() {

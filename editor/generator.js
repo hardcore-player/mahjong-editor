@@ -37,11 +37,12 @@ function quadCovered(lowerArr, r, c) {
   return lowerArr.some(lt => lt.row <= r && r < lt.row + 2 && lt.col <= c && c < lt.col + 2);
 }
 
+// 与编辑器一致：正下方一层盖住 ≥1 个象限即算有支撑（不再要求 4 象限全盖）
 function hasSupport(row, col, lowerArr) {
   const quads = [[row, col], [row, col + 1], [row + 1, col], [row + 1, col + 1]];
   let covered = 0;
   quads.forEach(([r, c]) => { if (quadCovered(lowerArr, r, c)) covered++; });
-  return covered === 4;
+  return covered >= 1;
 }
 
 // 兜底：校验整关每张"可消麻将"(排除吐牌机本体,它不是可消的牌)是否被下方任意层托住(象限规则)。
@@ -1866,6 +1867,59 @@ function rhythmFill(tiles, rng, attempt) {
  * 死局优先：先随机铺死局花色，再沿一条「边走边配」的窄走廊最小改线救活。
  * 走廊推进时同步写 script，避免回放对不上。
  */
+/** 死救填色用的邻接表缓存：同牌位几何只扫一遍 O(n²) */
+var __deadRescueGeoCache = null;
+function fingerprintPlayableLayout(tiles) {
+  const parts = [];
+  for (let i = 0; i < tiles.length; i++) {
+    const t = tiles[i];
+    parts.push((+t.layer) + ':' + (+t.row) + ':' + (+t.col));
+  }
+  return parts.join('|');
+}
+function getDeadRescueGeo(tiles) {
+  const n = tiles.length;
+  const key = fingerprintPlayableLayout(tiles);
+  if (
+    __deadRescueGeoCache &&
+    __deadRescueGeoCache.key === key &&
+    __deadRescueGeoCache.n === n
+  ) {
+    return __deadRescueGeoCache;
+  }
+  const items = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = tiles[i];
+    items[i] = { layer: +t.layer, row: +t.row, col: +t.col, _idx: i };
+  }
+  const higherOf = new Array(n);
+  const leftOf = new Array(n);
+  const rightOf = new Array(n);
+  for (let i = 0; i < n; i++) {
+    higherOf[i] = [];
+    leftOf[i] = [];
+    rightOf[i] = [];
+  }
+  for (let i = 0; i < n; i++) {
+    const a = items[i];
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const b = items[j];
+      if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) {
+        higherOf[i].push(j);
+      } else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
+        if (b.col === a.col - 2) leftOf[i].push(j);
+        else if (b.col === a.col + 2) rightOf[i].push(j);
+      }
+    }
+  }
+  __deadRescueGeoCache = { key: key, n: n, higherOf: higherOf, leftOf: leftOf, rightOf: rightOf };
+  return __deadRescueGeoCache;
+}
+function clearDeadRescueGeoCache() {
+  __deadRescueGeoCache = null;
+}
+
 function deadRescueFill(tiles, rng, attempt, opts) {
   attempt = attempt | 0;
   opts = opts || {};
@@ -1878,28 +1932,67 @@ function deadRescueFill(tiles, rng, attempt, opts) {
   const minParks = opts.minParks != null
     ? (opts.minParks | 0)
     : Math.max(1, Math.min(6, Math.floor(n / 50)));
+  // 生死牌：中期起强制若干对「高位死牌 + 深层生牌」（竖向层距），并在生牌上方堆障碍压力
+  const lifeDeathNeed = opts.lifeDeathPairs != null
+    ? Math.max(0, opts.lifeDeathPairs | 0)
+    : (n >= 100 ? 3 : (n >= 60 ? 2 : 0));
+  const lifeDeathMinGap = opts.lifeDeathMinGap != null ? Math.max(2, opts.lifeDeathMinGap | 0) : 3;
+  const lifeDeathMinBelow = opts.lifeDeathMinBelow != null ? Math.max(0, opts.lifeDeathMinBelow | 0) : 2;
+  const lifeDeathMinAbove = opts.lifeDeathMinAbove != null ? Math.max(0, opts.lifeDeathMinAbove | 0) : 2;
+  // 解法回放时至少要兑现这么多对「死牌进槽时生牌仍被埋」；默认 = 需求，可略降以免绝收
+  const lifeDeathPlayMin = opts.lifeDeathPlayMin != null
+    ? Math.max(0, opts.lifeDeathPlayMin | 0)
+    : lifeDeathNeed;
+  // 牺牲牌：前期主消若干色；其中 2 债色各留 1 张 orphan 必进槽，搭档埋到很后期才露
+  const sacrificeNeed = opts.sacrificeSuits != null
+    ? Math.max(0, opts.sacrificeSuits | 0)
+    : (n >= 100 ? 4 : (n >= 60 ? 3 : 0));
+  const sacrificeDebtNeed = opts.sacrificeDebtPairs != null
+    ? Math.max(0, Math.min(2, opts.sacrificeDebtPairs | 0))
+    : (sacrificeNeed > 0 && n >= 60 ? 2 : 0);
+  const sacrificeEarlyRatio = opts.sacrificeEarlyRatio != null
+    ? Math.min(0.35, Math.max(0.12, +opts.sacrificeEarlyRatio))
+    : 0.22;
+  // 债搭档允许露出的剩牌比例（越小越晚）；默认约后 25%
+  const sacrificeDebtRelease = opts.sacrificeDebtRelease != null
+    ? Math.min(0.45, Math.max(0.15, +opts.sacrificeDebtRelease))
+    : 0.28;
+  // 生牌：去竖向盖后仍须左右双堵（偷看也点不了）
+  const lifeDeathSideLock = opts.lifeDeathSideLock != null
+    ? !!opts.lifeDeathSideLock
+    : lifeDeathNeed > 0;
+  // 贪心卡死窗口：至少进到中期，但进不了后期（剩牌约 35%～55%）
+  const greedyMinLeft = opts.greedyMinLeft != null
+    ? Math.max(0, opts.greedyMinLeft | 0)
+    : (sacrificeDebtNeed > 0 ? Math.floor(n * 0.35) : Math.floor(n * 0.18));
+  const greedyMaxLeft = opts.greedyMaxLeft != null
+    ? Math.max(greedyMinLeft, opts.greedyMaxLeft | 0)
+    : (sacrificeDebtNeed > 0 ? Math.floor(n * 0.58) : n);
+  const sacrificeSuits = [];
+  if (sacrificeNeed > 0) {
+    const sacPool = [];
+    for (let s = 1; s <= TYPE_COUNT; s++) sacPool.push(s);
+    shuffle(sacPool, rng);
+    for (let si = 0; si < sacrificeNeed && si < sacPool.length; si++) sacrificeSuits.push(sacPool[si]);
+  }
+  const sacrificeDebtSuits = sacrificeSuits.slice(0, sacrificeDebtNeed);
+  const sacrificeSet = new Set(sacrificeSuits);
+  const sacrificeDebtSet = new Set(sacrificeDebtSuits);
+  let earlySacrificeMode = sacrificeSuits.length > 0;
+  const sacrificeBait = new Set();
+  const sacrificeDebtMate = new Set();
+  const sacrificeHolds = [];
   const items = tiles.map(function (t, idx) {
     return {
       layer: +t.layer, row: +t.row, col: +t.col, _idx: idx,
       spitterOrder: t.spitterOrder == null ? null : t.spitterOrder
     };
   });
-  const higherOf = new Array(n);
-  const leftOf = new Array(n);
-  const rightOf = new Array(n);
-  for (let i = 0; i < n; i++) { higherOf[i] = []; leftOf[i] = []; rightOf[i] = []; }
-  for (let i = 0; i < n; i++) {
-    const a = items[i];
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
-      const b = items[j];
-      if (b.layer > a.layer && Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) higherOf[i].push(j);
-      else if (b.layer === a.layer && Math.abs(b.row - a.row) < 2) {
-        if (b.col === a.col - 2) leftOf[i].push(j);
-        else if (b.col === a.col + 2) rightOf[i].push(j);
-      }
-    }
-  }
+  // 同几何只建一次邻接表（种子池上千次填色时省掉 O(n²) 重复活）
+  const geo = getDeadRescueGeo(tiles);
+  const higherOf = geo.higherOf;
+  const leftOf = geo.leftOf;
+  const rightOf = geo.rightOf;
   function sideBlocks(list, set, ignore) {
     for (let k = 0; k < list.length; k++) {
       const id = list[k];
@@ -2015,22 +2108,46 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     if (sameLayerNear(items[a], items[b]) && nearBudget <= 0) return 0;
     recount();
     const orderS = [];
-    if (prefer && prefer >= 1 && prefer <= TYPE_COUNT) orderS.push(prefer);
-    for (let s = 1; s <= TYPE_COUNT; s++) if (s !== prefer) orderS.push(s);
-    if (!prefer) shuffle(orderS, rng);
-    else {
-      const rest = orderS.slice(1);
-      shuffle(rest, rng);
-      for (let i = 0; i < rest.length; i++) orderS[i + 1] = rest[i];
+    if (earlySacrificeMode && sacrificeSet.size) {
+      // 开局牺牲色：只在 3～4 色内轮转；prefer 若也是牺牲色则置顶
+      if (prefer && sacrificeSet.has(prefer)) orderS.push(prefer);
+      const sac = sacrificeSuits.slice();
+      shuffle(sac, rng);
+      for (let i = 0; i < sac.length; i++) if (sac[i] !== prefer) orderS.push(sac[i]);
+      // 末 pass 才回退全色，避免开局失败绝收
+      for (let s = 1; s <= TYPE_COUNT; s++) {
+        if (!sacrificeSet.has(s) && s !== prefer) orderS.push(s);
+      }
+    } else {
+      if (prefer && prefer >= 1 && prefer <= TYPE_COUNT) orderS.push(prefer);
+      for (let s = 1; s <= TYPE_COUNT; s++) if (s !== prefer) orderS.push(s);
+      if (!prefer) shuffle(orderS, rng);
+      else {
+        const rest = orderS.slice(1);
+        shuffle(rest, rng);
+        for (let i = 0; i < rest.length; i++) orderS[i + 1] = rest[i];
+      }
     }
     let best = 0;
     let bestC = 999;
     // 大关可多几对同花，但始终优先分散（低计数），禁止往同一色猛堆
-    const softCap = n >= 160 ? 10 : (n >= 100 ? 8 : 8);
-    const hardCap = n >= 160 ? 12 : 10;
+    // 牺牲色开局阶段放宽单色上限，让前 20%～25% 能堆在 3～4 色上
+    const softCap = earlySacrificeMode
+      ? Math.max(14, Math.floor(n * 0.16))
+      : (n >= 160 ? 10 : (n >= 100 ? 8 : 8));
+    const hardCap = earlySacrificeMode
+      ? Math.max(softCap + 6, Math.floor(n * 0.22))
+      : (n >= 160 ? 12 : 10);
+    // pass0 只走牺牲色；pass1 起允许回退，避免开局色约束把中期走廊卡死
+    // pass0 只走牺牲色；pass1 起允许回退。债色一旦种下（各仅 2 张）禁止再复用
+    const sacOnlyUntil = earlySacrificeMode && sacrificeSet.size ? 1 : 0;
     for (let pass = 0; pass < 3 && !best; pass++) {
       for (let i = 0; i < orderS.length; i++) {
         const s = orderS[i];
+        if (sacrificeDebtSet.has(s) && (suitCount[s] || 0) >= 2) continue;
+        if (pass < sacOnlyUntil && sacrificeSet.size && !sacrificeSet.has(s)) continue;
+        // 债色本身不参与前期刷色，只留给 orphan+深埋搭档
+        if (earlySacrificeMode && sacrificeDebtSet.has(s)) continue;
         const c = suitCount[s] || 0;
         if (c + 2 > (pass >= 2 ? hardCap : softCap)) continue;
         let bad = false;
@@ -2063,6 +2180,31 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     if (prefer && s === prefer) baitMarks++;
     else baitMarks++;
     return s;
+  }
+  function bindPairForced(a, b, suit) {
+    if (assigned[a] || assigned[b] || !suit) return 0;
+    if (stacked(items[a], items[b])) return 0;
+    if (sameLayerNear(items[a], items[b]) && nearBudget <= 0) return 0;
+    recount();
+    for (let pass = 0; pass < 2; pass++) {
+      let bad = false;
+      for (let k = 0; k < n && !bad; k++) {
+        if (assigned[k] !== suit) continue;
+        if (stacked(items[k], items[a]) || stacked(items[k], items[b])) bad = true;
+        else if (sameLayerNear(items[k], items[a]) || sameLayerNear(items[k], items[b])) {
+          if (nearBudget <= 0 && pass < 1) bad = true;
+        } else if (pass === 0 && (tooClose(items[k], items[a]) || tooClose(items[k], items[b]))) {
+          bad = true;
+        }
+      }
+      if (bad) continue;
+      assigned[a] = assigned[b] = suit;
+      suitCount[suit] = (suitCount[suit] || 0) + 2;
+      pairs.push([a, b]);
+      baitMarks++;
+      return suit;
+    }
+    return 0;
   }
   function unbindPair(a, b) {
     const s = assigned[a];
@@ -2123,7 +2265,9 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     return moved;
   }
 
-  const easyTarget = Math.max(4, Math.floor(n * 0.16 / 2) * 2);
+  const easyTarget = sacrificeSuits.length
+    ? Math.max(4, Math.floor(n * sacrificeEarlyRatio / 2) * 2)
+    : Math.max(4, Math.floor(n * 0.16 / 2) * 2);
   const openingCap = Math.max(2, Math.min(4, Math.round(n / 80)));
   const initialFree = new Set(clickableIn(rem).map(function (t) { return t._idx; }));
   let openingMade = 0;
@@ -2177,8 +2321,73 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     openingMade++;
     sweep();
   }
+
+  // ----- 牺牲债：开局后钉「当面 orphan + 深埋搭档」（先不进槽，留给中期种生死；债色各仅 2 张）-----
+  let debtParkedCount = 0;
+  let debtParkedRem = n;
+  if (sacrificeDebtSuits.length) {
+    for (let si = 0; si < sacrificeDebtSuits.length; si++) {
+      const suit = sacrificeDebtSuits[si];
+      const orphanCands = clickableIn(rem).filter(function (t) {
+        return !assigned[t._idx] && !sacrificeBait.has(t._idx) && !sacrificeDebtMate.has(t._idx);
+      });
+      shuffle(orphanCands, rng);
+      let mateCands = items.filter(function (t) {
+        if (!rem.has(t._idx) || assigned[t._idx]) return false;
+        if (sacrificeBait.has(t._idx) || sacrificeDebtMate.has(t._idx)) return false;
+        return coversIn(rem, t).length >= 3;
+      });
+      if (mateCands.length < 2) {
+        mateCands = items.filter(function (t) {
+          if (!rem.has(t._idx) || assigned[t._idx]) return false;
+          if (sacrificeBait.has(t._idx) || sacrificeDebtMate.has(t._idx)) return false;
+          return coversIn(rem, t).length >= 2;
+        });
+      }
+      mateCands.sort(function (a, b) {
+        const ca = coversIn(rem, a).length;
+        const cb = coversIn(rem, b).length;
+        if (ca !== cb) return cb - ca;
+        return a.layer - b.layer || rng() - 0.5;
+      });
+      let planted = false;
+      for (let fi = 0; fi < orphanCands.length && !planted; fi++) {
+        const orphan = orphanCands[fi];
+        for (let bi = 0; bi < Math.min(mateCands.length, 24) && !planted; bi++) {
+          const mate = mateCands[bi];
+          if (mate._idx === orphan._idx) continue;
+          if (stacked(orphan, mate)) continue;
+          if (assigned[orphan._idx] || assigned[mate._idx]) continue;
+          assigned[orphan._idx] = assigned[mate._idx] = suit;
+          suitCount[suit] = (suitCount[suit] || 0) + 2;
+          pairs.push([orphan._idx, mate._idx]);
+          baitMarks++;
+          sacrificeBait.add(orphan._idx);
+          sacrificeDebtMate.add(mate._idx);
+          sacrificeHolds.push({
+            bait: orphan._idx,
+            mate: mate._idx,
+            suit: suit,
+            debt: true,
+            mateCov: coversIn(rem, mate).length
+          });
+          planted = true;
+        }
+      }
+    }
+    if (sacrificeHolds.filter(function (h) { return h.debt; }).length < sacrificeDebtNeed) {
+      globalThis.__rhythm = {
+        fail: 'sacrifice-debt',
+        parked: 0,
+        need: sacrificeDebtNeed,
+        holds: sacrificeHolds.length
+      };
+      return null;
+    }
+  }
+
   while (guard++ < n && removed < easyTarget) {
-    const batch = clickableIn(rem);
+    const batch = clickableIn(rem).filter(function (t) { return !sacrificeBait.has(t._idx); });
     if (batch.length < 2) break;
     const best = pickRandomFarPair(batch, removed < easyTarget * 0.6) || pickRandomFarPair(batch, false);
     if (!best || !bindPair(best.a._idx, best.b._idx)) break;
@@ -2188,11 +2397,69 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     }
     script.push(['p', best.a._idx, best.b._idx]);
     removed += 2;
+    // 债已在槽里：sweep 勿误把别的牌堆满；仍可消对
     sweep();
   }
   if (removed < 4 || openingMade < 2) {
     globalThis.__rhythm = { fail: 'easy', removed: removed, openingMade: openingMade };
     return null;
+  }
+
+  earlySacrificeMode = false;
+
+  // ----- 生死牌：中期「死牌 ↔ 生牌」；生牌去盖后仍左右双堵（偷看也点不了）-----
+  function countBelowIdx(idx) {
+    let c = 0;
+    const a = items[idx];
+    for (let j = 0; j < n; j++) {
+      if (j === idx) continue;
+      const b = items[j];
+      if (b.layer >= a.layer) continue;
+      if (Math.abs(b.row - a.row) < 2 && Math.abs(b.col - a.col) < 2) c++;
+    }
+    return c;
+  }
+  // 去掉所有上压后，左右是否仍双堵（邻牌本身不是上压盖子）
+  function sideLockedWhenUncovered(lifeIdx, set) {
+    const leftHit = sideBlocks(leftOf[lifeIdx], set, -1);
+    const rightHit = sideBlocks(rightOf[lifeIdx], set, -1);
+    return leftHit && rightHit;
+  }
+  const lifeDeathPairs = [];
+  const ldDead = new Set();
+  const ldLife = new Set();
+  const ldObstacle = new Set();
+  var ldObstacleInit = 0;
+  function registerLifeDeath(deadIdx, lifeIdx) {
+    if (ldDead.has(deadIdx) || ldLife.has(lifeIdx)) return;
+    ldDead.add(deadIdx);
+    ldLife.add(lifeIdx);
+    lifeDeathPairs.push({
+      dead: deadIdx,
+      life: lifeIdx,
+      gap: items[deadIdx].layer - items[lifeIdx].layer,
+      below: countBelowIdx(deadIdx),
+      above: higherOf[lifeIdx].length,
+      sideLock: sideLockedWhenUncovered(lifeIdx, rem)
+    });
+    higherOf[lifeIdx].forEach(function (h) {
+      if (rem.has(h) && !assigned[h] && h !== deadIdx && !sacrificeDebtMate.has(h)) {
+        ldObstacle.add(h);
+      }
+    });
+    ldObstacleInit = ldObstacle.size;
+  }
+  function lifeDeathScore(topIdx, lifeIdx) {
+    if (sacrificeDebtMate.has(lifeIdx) || sacrificeBait.has(lifeIdx)) return -1;
+    const gap = items[topIdx].layer - items[lifeIdx].layer;
+    if (gap < lifeDeathMinGap) return -1;
+    if (stacked(items[topIdx], items[lifeIdx])) return -1;
+    const below = countBelowIdx(topIdx);
+    const aboveNow = higherOf[lifeIdx].filter(function (h) { return rem.has(h); }).length;
+    if (below < lifeDeathMinBelow || aboveNow < lifeDeathMinAbove) return -1;
+    if (lifeDeathSideLock && !sideLockedWhenUncovered(lifeIdx, rem)) return -1;
+    const sideBonus = sideLockedWhenUncovered(lifeIdx, rem) ? 12 : 0;
+    return below * 4 + aboveNow * 5 + gap * 3 + sideBonus + rng() * 4;
   }
 
   guard = 0;
@@ -2202,18 +2469,107 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     const free = clickableIn(rem);
     if (!free.length) { globalThis.__rhythm = { fail: 'nofree', rem: rem.size }; return null; }
 
-    // 剩牌越少越优先停牌，把难度压到后段（约剩 1/2～1/3）
+    const midGame = rem.size <= n * 0.75 && rem.size > n * 0.25;
+
+    // 生死种够且槽已腾空后：一次收满 2 张债（避免「死牌+2债」把 3 槽塞死）
+    const ldReadyForDebt = lifeDeathNeed <= 0
+      || lifeDeathPairs.length >= lifeDeathNeed
+      || (lifeDeathPlayMin > 0 && lifeDeathPairs.length >= lifeDeathPlayMin)
+      || rem.size <= n * 0.5;
+    if (
+      debtParkedCount < sacrificeDebtNeed &&
+      sacrificeBait.size &&
+      slots.length === 0 &&
+      ldReadyForDebt
+    ) {
+      const debtOrphans = free.filter(function (t) {
+        return sacrificeBait.has(t._idx) && assigned[t._idx] && rem.has(t._idx);
+      });
+      shuffle(debtOrphans, rng);
+      let justParked = false;
+      for (let di = 0; di < debtOrphans.length; di++) {
+        if (debtParkedCount >= sacrificeDebtNeed || slots.length >= 3) break;
+        const t = debtOrphans[di];
+        const mate = mateOf(t._idx);
+        if (mate < 0 || !rem.has(mate) || isFreeIdx(rem, mate, -1)) continue;
+        if (debtParkedCount === 0) debtParkedRem = rem.size;
+        if (!pick(t._idx)) continue;
+        script.push(['k', t._idx]);
+        forceParks++;
+        debtParkedCount++;
+        justParked = true;
+      }
+      if (justParked) continue;
+    }
+
+    // 已登记的死牌露出且生牌仍埋着 → 进槽
+    let ldParked = false;
+    if (slots.length < 3) {
+      for (let fi = 0; fi < free.length; fi++) {
+        const t = free[fi];
+        if (!ldDead.has(t._idx)) continue;
+        const mate = mateOf(t._idx);
+        if (mate < 0 || !rem.has(mate)) continue;
+        if (isFreeIdx(rem, mate, -1)) continue;
+        if (!pick(t._idx)) continue;
+        script.push(['k', t._idx]);
+        forceParks++;
+        ldParked = true;
+        break;
+      }
+    }
+    if (ldParked) continue;
+
+    // 障碍盖子：已有 2 债时不再塞障碍（只留 1 格给死牌），否则走廊极易卡死
+    let obsParked = false;
+    if (slots.length < 2 && ldObstacle.size && midGame) {
+      const obsFree = free.filter(function (t) {
+        return ldObstacle.has(t._idx) && !assigned[t._idx];
+      });
+      shuffle(obsFree, rng);
+      for (let oi = 0; oi < obsFree.length && !obsParked; oi++) {
+        const top = obsFree[oi];
+        const buried = items.filter(function (t) {
+          if (!rem.has(t._idx) || t._idx === top._idx || assigned[t._idx]) return false;
+          if (ldDead.has(t._idx) || ldLife.has(t._idx)) return false;
+          if (stacked(top, t)) return false;
+          return true;
+        });
+        buried.sort(function (a, b) {
+          return coversIn(rem, b).length - coversIn(rem, a).length || rng() - 0.5;
+        });
+        for (let bi = 0; bi < Math.min(buried.length, 10) && !obsParked; bi++) {
+          if (!bindPair(top._idx, buried[bi]._idx)) continue;
+          if (!pick(top._idx)) {
+            unbindPair(top._idx, buried[bi]._idx);
+            continue;
+          }
+          script.push(['k', top._idx]);
+          forceParks++;
+          ldObstacle.delete(top._idx);
+          obsParked = true;
+        }
+      }
+    }
+    if (obsParked) continue;
+
+    // 剩牌越少越优先停牌；中期提高生死牌尝试率，但绝不当成「每步必停牌」（否则三槽塞满卡死）
     const needMoreParks = forceParks < minParks;
+    const needMoreLifeDeath = lifeDeathNeed > 0 && lifeDeathPairs.length < lifeDeathNeed;
     const lateHalf = rem.size <= n * 0.55;
+    // 2 债占槽后：只再允许种生死死牌（第 3 格），其它停牌关掉，优先当面消对保走廊
+    const debtLoaded = debtParkedCount >= 2 || slots.length >= 2 && sacrificeBait.size >= 2;
     const tryParkFirst = rem.size > 14 && slots.length < 3 && (
-      needMoreParks ||
-      (lateHalf && slots.length === 0 && rng() < 0.45) ||
-      (slots.length === 0 && rem.size > n * 0.35 && rng() < 0.22)
+      (!debtLoaded && needMoreParks) ||
+      (needMoreLifeDeath && midGame && rng() < (debtLoaded ? 0.85 : 0.7)) ||
+      (!debtLoaded && midGame && slots.length < 2 && rng() < 0.4) ||
+      (!debtLoaded && lateHalf && slots.length === 0 && rng() < 0.45) ||
+      (!debtLoaded && slots.length === 0 && rem.size > n * 0.35 && rng() < 0.22)
     );
     let placed = false;
 
-    // 双停牌（缺停牌时优先）
-    if (tryParkFirst && slots.length === 0 && free.length >= 2 && rem.size > 12 && doubleParks < Math.max(3, Math.round(n / 45))) {
+    // 双停牌（缺停牌时优先）；已有债则禁止双停
+    if (tryParkFirst && !debtLoaded && slots.length === 0 && free.length >= 2 && rem.size > 12 && doubleParks < Math.max(3, Math.round(n / 45))) {
       const pool = free.slice();
       shuffle(pool, rng);
       for (let i = 0; i < pool.length && !placed; i++) {
@@ -2285,17 +2641,68 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     }
     if (placed) continue;
 
-    // 单停牌（缺停牌时优先尝试）
+    // 单停牌：中期优先绑成生死牌（竖向深埋搭档）
     if (!placed && tryParkFirst) {
       const pool = free.slice();
       shuffle(pool, rng);
+      // 先尝试生死牌形态（允许在 2 债之后占用第 3 格）
+      if (needMoreLifeDeath && midGame && slots.length < 3) {
+        for (let i = 0; i < pool.length && !placed; i++) {
+          const top = pool[i];
+          if (assigned[top._idx] || ldLife.has(top._idx)) continue;
+          if (countBelowIdx(top._idx) < lifeDeathMinBelow) continue;
+          const ldCands = [];
+          for (let j = 0; j < n; j++) {
+            if (!rem.has(j) || assigned[j] || j === top._idx) continue;
+            if (ldDead.has(j) || ldLife.has(j)) continue;
+            const sc = lifeDeathScore(top._idx, j);
+            if (sc < 0) continue;
+            ldCands.push({ idx: j, score: sc });
+          }
+          ldCands.sort(function (a, b) { return b.score - a.score; });
+          for (let li = 0; li < Math.min(ldCands.length, 8) && !placed; li++) {
+            const partner = items[ldCands[li].idx];
+            if (!bindPair(top._idx, partner._idx)) continue;
+            if (!pick(top._idx)) {
+              unbindPair(top._idx, partner._idx);
+              continue;
+            }
+            registerLifeDeath(top._idx, partner._idx);
+            script.push(['k', top._idx]);
+            forceParks++;
+            placed = true;
+          }
+        }
+      }
       for (let i = 0; i < pool.length && !placed; i++) {
         const top = pool[i];
+        if (assigned[top._idx]) {
+          // 债 orphan：等生死种完再由专用分支收槽，避免抢在生死前占满
+          if (
+            sacrificeBait.has(top._idx) &&
+            debtParkedCount < sacrificeDebtNeed &&
+            lifeDeathNeed > 0 &&
+            lifeDeathPairs.length < Math.max(1, Math.min(lifeDeathNeed, lifeDeathPlayMin || 1))
+          ) continue;
+          const mate = mateOf(top._idx);
+          if (mate >= 0 && rem.has(mate) && !isFreeIdx(rem, mate, -1) && pick(top._idx)) {
+            if (sacrificeBait.has(top._idx) && debtParkedCount === 0) debtParkedRem = rem.size + 1;
+            if (sacrificeBait.has(top._idx)) debtParkedCount++;
+            script.push(['k', top._idx]);
+            forceParks++;
+            placed = true;
+          }
+          continue;
+        }
         const buried = items.filter(function (t) {
           if (!rem.has(t._idx) || t._idx === top._idx || assigned[t._idx]) return false;
+          // 债搭档很后期才允许被绑进别的线（它们已配色，这里只是双保险）
+          if (sacrificeDebtMate.has(t._idx) && rem.size > n * sacrificeDebtRelease) return false;
           if (stacked(top, t)) return false;
           const cov = coversIn(rem, t);
-          if (!cov.length || cov.length > (relax ? 7 : 4)) return false;
+          // 缺生死牌时允许更深埋的搭档（盖子可到 8）
+          const covMax = (needMoreLifeDeath && midGame) ? 8 : (relax ? 7 : 4);
+          if (!cov.length || cov.length > covMax) return false;
           return true;
         });
         if (!buried.length && relax) {
@@ -2314,23 +2721,36 @@ function deadRescueFill(tiles, rng, attempt, opts) {
             buried.unshift(hit);
           }
         }
+        // 中期缺生死牌时：优先竖向深埋搭档（可放宽 above 门槛再试）
         buried.sort(function (a, b) {
+          if (needMoreLifeDeath && midGame) {
+            const sa = lifeDeathScore(top._idx, a._idx);
+            const sb = lifeDeathScore(top._idx, b._idx);
+            if (sa !== sb) return sb - sa;
+            const ga = items[top._idx].layer - items[a._idx].layer;
+            const gb = items[top._idx].layer - items[b._idx].layer;
+            if (ga !== gb) return gb - ga;
+          }
           const ca = coversIn(rem, a).length;
           const cb = coversIn(rem, b).length;
           if (ca !== cb) return ca - cb;
           return rng() - 0.5;
         });
-        const tryN = Math.min(buried.length, Math.max(3, Math.ceil(buried.length * 0.6)));
-        const orderBi = [];
-        for (let bi = 0; bi < tryN; bi++) orderBi.push(bi);
-        shuffle(orderBi, rng);
-        for (let oi = 0; oi < orderBi.length && !placed; oi++) {
-          const partner = buried[orderBi[oi]];
+        const tryN = Math.min(buried.length, Math.max(4, Math.ceil(buried.length * 0.7)));
+        for (let oi = 0; oi < tryN && !placed; oi++) {
+          const partner = buried[oi];
+          const gap = items[top._idx].layer - items[partner._idx].layer;
+          const aboveNow = higherOf[partner._idx].filter(function (h) { return rem.has(h); }).length;
+          const asLifeDeath = lifeDeathPairs.length < lifeDeathNeed
+            && gap >= lifeDeathMinGap
+            && countBelowIdx(top._idx) >= lifeDeathMinBelow
+            && aboveNow >= Math.max(1, lifeDeathMinAbove - (relax ? 1 : 0));
           if (!bindPair(top._idx, partner._idx)) continue;
           if (!pick(top._idx)) {
             unbindPair(top._idx, partner._idx);
             continue;
           }
+          if (asLifeDeath) registerLifeDeath(top._idx, partner._idx);
           script.push(['k', top._idx]);
           forceParks++;
           placed = true;
@@ -2339,9 +2759,22 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     }
     if (placed) continue;
 
-    // 当面消对：后段先尝试停牌，失败后再消对（避免走廊卡死）
+    // 当面消对：死牌（生仍埋）不当面乱配；未进槽的债 orphan 也不当面消
+    function freeForSurfacePair() {
+      return free.filter(function (t) {
+        if (sacrificeBait.has(t._idx) && debtParkedCount < sacrificeDebtNeed) {
+          const mate = mateOf(t._idx);
+          if (mate >= 0 && rem.has(mate) && !isFreeIdx(rem, mate, -1)) return false;
+        }
+        if (!ldDead.has(t._idx)) return true;
+        const mate = mateOf(t._idx);
+        if (mate < 0 || !rem.has(mate)) return true;
+        return isFreeIdx(rem, mate, -1);
+      });
+    }
     if (slots.length < 3 && free.length >= 2) {
-      const pair = pickRandomFarPair(free, false);
+      const surf = freeForSurfacePair();
+      const pair = pickRandomFarPair(surf.length >= 2 ? surf : free, false);
       if (pair && bindPair(pair.a._idx, pair.b._idx)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
@@ -2353,7 +2786,8 @@ function deadRescueFill(tiles, rng, attempt, opts) {
 
     // 末段或放松：再试当面一对 / 放宽后的单停牌
     if (!placed && slots.length < 3 && free.length >= 2 && (rem.size <= 16 || relax || slots.length >= 2)) {
-      const pair = pickRandomFarPair(free, false);
+      const surf2 = freeForSurfacePair();
+      const pair = pickRandomFarPair(surf2.length >= 2 ? surf2 : free, false);
       if (pair && bindPair(pair.a._idx, pair.b._idx)) {
         if (pick(pair.a._idx) && pick(pair.b._idx)) {
           script.push(['p', pair.a._idx, pair.b._idx]);
@@ -2396,6 +2830,110 @@ function deadRescueFill(tiles, rng, attempt, opts) {
   if (forceParks < minParks) {
     globalThis.__rhythm = { fail: 'parks', forceParks: forceParks, need: minParks };
     return null;
+  }
+
+  // 牺牲债验收：前期已进槽 + 搭档在较后段才消
+  if (sacrificeDebtNeed > 0) {
+    const debtHolds = sacrificeHolds.filter(function (h) { return h.debt; });
+    if (debtHolds.length < sacrificeDebtNeed || debtParkedCount < sacrificeDebtNeed) {
+      globalThis.__rhythm = {
+        fail: 'sacrifice-hold-short',
+        have: debtHolds.length,
+        parked: debtParkedCount,
+        need: sacrificeDebtNeed
+      };
+      return null;
+    }
+    // 进槽应在中后期之前（剩牌仍偏多）
+    if (debtParkedCount < sacrificeDebtNeed) {
+      globalThis.__rhythm = {
+        fail: 'sacrifice-debt',
+        parked: debtParkedCount,
+        need: sacrificeDebtNeed
+      };
+      return null;
+    }
+    if (debtParkedRem < n * 0.4) {
+      globalThis.__rhythm = {
+        fail: 'sacrifice-debt-early',
+        parkedRem: debtParkedRem,
+        needRem: Math.floor(n * 0.4)
+      };
+      return null;
+    }
+    const remD = new Set(items.map(function (t) { return t._idx; }));
+    const mateSet = new Set(debtHolds.map(function (h) { return h.mate; }));
+    let mateClearedLate = 0;
+    for (let si = 0; si < script.length; si++) {
+      const step = script[si];
+      const ids = step[0] === 'p' ? [step[1], step[2]] : [step[1]];
+      for (let ii = 0; ii < ids.length; ii++) {
+        const id = ids[ii];
+        const leftBefore = remD.size;
+        if (mateSet.has(id) && leftBefore <= n * (sacrificeDebtRelease + 0.15)) mateClearedLate++;
+        remD.delete(id);
+      }
+    }
+    if (mateClearedLate < Math.max(1, sacrificeDebtNeed - 1)) {
+      globalThis.__rhythm = {
+        fail: 'sacrifice-debt-late',
+        mateClearedLate: mateClearedLate,
+        need: sacrificeDebtNeed,
+        release: sacrificeDebtRelease
+      };
+      return null;
+    }
+  }
+
+  // 生死牌验收：登记数量 + 死牌进槽时生牌仍埋 + 生牌具备侧堵
+  if (lifeDeathPlayMin > 0) {
+    if (lifeDeathPairs.length < lifeDeathPlayMin) {
+      globalThis.__rhythm = {
+        fail: 'life-death-short',
+        have: lifeDeathPairs.length,
+        need: lifeDeathPlayMin
+      };
+      return null;
+    }
+    if (lifeDeathSideLock) {
+      const sideOk = lifeDeathPairs.filter(function (p) { return p.sideLock; }).length;
+      if (sideOk < lifeDeathPlayMin) {
+        globalThis.__rhythm = {
+          fail: 'life-death-side',
+          sideOk: sideOk,
+          need: lifeDeathPlayMin
+        };
+        return null;
+      }
+    }
+    const remV = new Set(items.map(function (t) { return t._idx; }));
+    let ldOk = 0;
+    function applyV(id) { remV.delete(id); }
+    for (let si = 0; si < script.length; si++) {
+      const step = script[si];
+      if (step[0] === 'p') {
+        applyV(step[1]);
+        applyV(step[2]);
+        continue;
+      }
+      const id = step[1];
+      if (ldDead.has(id)) {
+        const mate = mateOf(id);
+        if (mate >= 0 && remV.has(mate) && !isFreeIdx(remV, mate, -1)) {
+          if (items[id].layer - items[mate].layer >= lifeDeathMinGap) ldOk++;
+        }
+      }
+      applyV(id);
+    }
+    if (ldOk < lifeDeathPlayMin) {
+      globalThis.__rhythm = {
+        fail: 'life-death-play',
+        ldOk: ldOk,
+        need: lifeDeathPlayMin,
+        reserved: lifeDeathPairs.length
+      };
+      return null;
+    }
   }
 
   // 完整性
@@ -2461,21 +2999,33 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     slG.push(assigned[fr[0]._idx]);
     boardG.delete(fr[0]._idx);
   }
-  // 中期不再刻意卡死：贪心残留门槛放宽，难度交给后 1/3
-  const greedyNeed = Math.floor(n * 0.18);
-  if (boardG.size < greedyNeed) {
-    globalThis.__rhythm = { fail: 'greedy', left: boardG.size, need: greedyNeed, forceParks: forceParks };
+  // 贪心：有债时要求卡在中后期分界（进得了中期、进不了后期）
+  if (boardG.size < greedyMinLeft) {
+    globalThis.__rhythm = {
+      fail: 'greedy', left: boardG.size, need: greedyMinLeft, forceParks: forceParks
+    };
+    return null;
+  }
+  if (boardG.size > greedyMaxLeft) {
+    globalThis.__rhythm = {
+      fail: 'greedy-early', left: boardG.size, max: greedyMaxLeft, forceParks: forceParks
+    };
     return null;
   }
   const branchAvg = branchN ? branchSum / branchN : 99;
-  if (branchAvg > 2.8) {
+  const branchCap = sacrificeSuits.length ? 3.35 : 2.8;
+  if (branchAvg > branchCap) {
     globalThis.__rhythm = { fail: 'branchy', branchAvg: Math.round(branchAvg * 100) / 100, forceParks: forceParks };
     return null;
   }
 
-  // 开局可点区：禁止同花糊成一两坨（观感单调）
-  const openMaxFreePerSuit = opts.openMaxFreePerSuit != null ? (opts.openMaxFreePerSuit | 0) : 2;
-  const openMinSuits = opts.openMinSuits != null ? (opts.openMinSuits | 0) : 3;
+  // 开局可点区：无牺牲色时禁止同花糊成一两坨；有牺牲色时允许 3～4 色堆开
+  const openMaxFreePerSuit = opts.openMaxFreePerSuit != null
+    ? (opts.openMaxFreePerSuit | 0)
+    : (sacrificeSuits.length ? Math.max(5, sacrificeSuits.length + 2) : 2);
+  const openMinSuits = opts.openMinSuits != null
+    ? (opts.openMinSuits | 0)
+    : (sacrificeSuits.length ? Math.min(3, sacrificeSuits.length) : 3);
   const openFree = clickableIn(new Set(items.map(function (t) { return t._idx; })));
   const openBySuit = {};
   openFree.forEach(function (t) {
@@ -2574,9 +3124,23 @@ function deadRescueFill(tiles, rng, attempt, opts) {
     greedyLeft: boardG.size, branchAvg: Math.round(branchAvg * 100) / 100,
     nearHits: nearHits, nearBudget: nearBudget, lateFpAvg: Math.round(lateFpAvg * 100) / 100,
     latePeakFp: latePeakFp, latePairRatio: Math.round(latePairRatio * 100) / 100,
-    openSuitN: openSuitN, openMaxOne: openMaxOne, dead: true
+    openSuitN: openSuitN, openMaxOne: openMaxOne, dead: true,
+    lifeDeath: lifeDeathPairs.length, lifeDeathNeed: lifeDeathNeed,
+    lifeDeathGap: lifeDeathMinGap,
+    obstacles: typeof ldObstacleInit === 'number' ? ldObstacleInit : ldObstacle.size,
+    sacrifice: sacrificeSuits.length,
+    sacrificeDebt: sacrificeDebtSuits.length,
+    sacrificeHolds: sacrificeHolds.length,
+    sacrificeEarly: easyTarget,
+    sideLock: lifeDeathPairs.filter(function (p) { return p.sideLock; }).length
   };
-  return { assigned: assigned, pairsPlaced: [], script: script };
+  return {
+    assigned: assigned,
+    pairsPlaced: [],
+    script: script,
+    lifeDeath: lifeDeathPairs.slice(),
+    sacrifice: sacrificeHolds.slice()
+  };
 }
 
 function visiblePlayTiles(rem) {
@@ -2669,8 +3233,11 @@ function solutionFromScript(playable, script) {
   }
   return { version: 1, slotCapacity: 4, usesProps: false, steps: steps };
 }
-function reshufflePlayLevel(level, attempt, rng) {
+function reshufflePlayLevel(level, attempt, rng, ctrl) {
   if (!level || !level.tiles) return null;
+  ctrl = ctrl || {};
+  // fastAbort：同串连续同因失败则跳下一档（合格线不变，少磨没戏的内试）
+  const fastAbort = ctrl.fastAbort !== false;
   const tiles = level.tiles.map(function (t) { return Object.assign({}, t); });
   const usedIds = new Set();
   let nextId = 1;
@@ -2692,24 +3259,45 @@ function reshufflePlayLevel(level, attempt, rng) {
   });
   if (!playable.length || playable.length % 2) return null;
   const n = playable.length;
+  // 预热邻接缓存（后续本函数内上千次 deadRescueFill 共用）
+  getDeadRescueGeo(playable);
   // 一次重开内部多试：先严后松，玩家无感
   // 后台种子库会囤合格结果；前台现算仍多试。曲线：前易 → 越往后越难，剩约 1/3 近死局
-  const strictTries = Math.max(300, Math.min(1000, Math.round(n * 3.5)));
-  const softTries = Math.max(300, Math.min(900, Math.round(n * 3)));
-  const fallbackTries = Math.max(250, Math.min(700, Math.round(n * 2.5)));
+  // 上压改为边贴也算后，可点更少，内试多给一些
+  const strictTries = Math.max(400, Math.min(1400, Math.round(n * 4.5)));
+  const softTries = Math.max(400, Math.min(1200, Math.round(n * 4)));
+  const fallbackTries = Math.max(350, Math.min(1000, Math.round(n * 3.5)));
   const softNear = Math.max(1, Math.min(6, Math.ceil((n / 2) * 0.05)));
+  // 大关：strict/soft 要生死牌；fallback 保底也能出池，但仍强制挖埋
+  const ldStrict = n >= 100 ? 3 : (n >= 60 ? 2 : 0);
+  const ldSoft = n >= 100 ? 2 : (n >= 60 ? 2 : 0);
+  // 2 债 + 中期生死（槽腾空后再收债）；侧堵尽量要；fallback 保底出池
+  const sacN = n >= 100 ? 4 : (n >= 60 ? 3 : 0);
+  const debtN = sacN > 0 ? 2 : 0;
   const passes = [
     {
       label: 'strict',
       tries: strictTries,
       opts: {
-        nearBudget: 0,
-        lateEasyMax: 1.35,
-        latePeakFp: 2,
-        latePairRatioMax: 0.78,
-        minParks: Math.max(1, Math.min(5, Math.floor(n / 50))),
-        openMaxFreePerSuit: 2,
-        openMinSuits: 3
+        nearBudget: 1,
+        lateEasyMax: 1.5,
+        latePeakFp: 3,
+        latePairRatioMax: 0.82,
+        minParks: debtN,
+        openMaxFreePerSuit: sacN ? 7 : 2,
+        openMinSuits: 2,
+        lifeDeathPairs: 1,
+        lifeDeathMinGap: 3,
+        lifeDeathMinBelow: 1,
+        lifeDeathMinAbove: 2,
+        lifeDeathPlayMin: 1,
+        lifeDeathSideLock: true,
+        sacrificeSuits: Math.max(sacN, 4),
+        sacrificeDebtPairs: debtN,
+        sacrificeEarlyRatio: 0.22,
+        sacrificeDebtRelease: 0.32,
+        greedyMinLeft: Math.floor(n * 0.28),
+        greedyMaxLeft: Math.floor(n * 0.62)
       }
     },
     {
@@ -2717,26 +3305,49 @@ function reshufflePlayLevel(level, attempt, rng) {
       tries: softTries,
       opts: {
         nearBudget: Math.max(1, Math.min(softNear, 3)),
-        lateEasyMax: 1.6,
-        latePeakFp: 3,
-        latePairRatioMax: 0.88,
-        minParks: 0,
-        openMaxFreePerSuit: 2,
-        openMinSuits: 3
+        lateEasyMax: 1.9,
+        latePeakFp: 4,
+        latePairRatioMax: 0.9,
+        minParks: debtN,
+        openMaxFreePerSuit: 8,
+        openMinSuits: 2,
+        lifeDeathPairs: 1,
+        lifeDeathMinGap: 3,
+        lifeDeathMinBelow: 1,
+        lifeDeathMinAbove: 2,
+        lifeDeathPlayMin: 1,
+        lifeDeathSideLock: true,
+        sacrificeSuits: Math.max(sacN, 4),
+        sacrificeDebtPairs: debtN,
+        sacrificeEarlyRatio: 0.20,
+        sacrificeDebtRelease: 0.35,
+        greedyMinLeft: Math.floor(n * 0.22),
+        greedyMaxLeft: Math.floor(n * 0.70)
       }
     },
     {
-      // 冷启动保底：保证能开局；品质偏低，尽量不入库
       label: 'fallback',
-      tries: fallbackTries,
+      tries: Math.max(fallbackTries, 800),
       opts: {
-        nearBudget: softNear,
-        lateEasyMax: 2.4,
+        nearBudget: Math.max(softNear, 4),
+        lateEasyMax: 2.6,
         latePeakFp: 5,
-        latePairRatioMax: 1.0,
-        minParks: 0,
-        openMaxFreePerSuit: 3,
-        openMinSuits: 2
+        latePairRatioMax: 0.96,
+        minParks: debtN,
+        openMaxFreePerSuit: 10,
+        openMinSuits: 1,
+        lifeDeathPairs: n >= 80 ? 1 : 0,
+        lifeDeathMinGap: 3,
+        lifeDeathMinBelow: 1,
+        lifeDeathMinAbove: 1,
+        lifeDeathPlayMin: 0,
+        lifeDeathSideLock: false,
+        sacrificeSuits: Math.max(sacN, 4),
+        sacrificeDebtPairs: debtN,
+        sacrificeEarlyRatio: 0.18,
+        sacrificeDebtRelease: 0.40,
+        greedyMinLeft: Math.floor(n * 0.15),
+        greedyMaxLeft: Math.floor(n * 0.78)
       }
     }
   ];
@@ -2744,9 +3355,18 @@ function reshufflePlayLevel(level, attempt, rng) {
   let lastFail = null;
   let outerTries = 0;
   let usedPass = 'strict';
+  function streakAbortLimit(pass) {
+    if (!fastAbort) return pass.tries + 1;
+    // 连续失败（不限同因）则切下一串；保底档多留机会。opts/合格线不变。
+    if (pass.label === 'fallback') return Math.max(140, Math.floor(pass.tries * 0.35));
+    if (pass.label === 'soft') return Math.max(90, Math.floor(pass.tries * 0.16));
+    return Math.max(70, Math.floor(pass.tries * 0.12));
+  }
   for (let pi = 0; pi < passes.length && !accepted; pi++) {
     const pass = passes[pi];
     usedPass = pass.label;
+    const abortAt = streakAbortLimit(pass);
+    let failStreak = 0;
     for (let k = 0; k < pass.tries && !accepted; k++) {
       outerTries++;
       const result = deadRescueFill(
@@ -2755,8 +3375,13 @@ function reshufflePlayLevel(level, attempt, rng) {
         1,
         pass.opts
       );
+      function noteFail(reason) {
+        lastFail = reason;
+        failStreak++;
+        return failStreak >= abortAt;
+      }
       if (!result || !result.script || !result.assigned) {
-        lastFail = (globalThis.__rhythm && globalThis.__rhythm.fail) || 'fill';
+        if (noteFail((globalThis.__rhythm && globalThis.__rhythm.fail) || 'fill')) break;
         continue;
       }
       let p = 0;
@@ -2767,20 +3392,21 @@ function reshufflePlayLevel(level, attempt, rng) {
       const tally = {};
       playable.forEach(function (t) { tally[t.typeId] = (tally[t.typeId] || 0) + 1; });
       if (Object.keys(tally).some(function (kk) { return tally[kk] % 2 !== 0; })) {
-        lastFail = 'odd';
+        if (noteFail('odd')) break;
         continue;
       }
       const solution = solutionFromScript(playable, result.script);
       if (!solution.steps || solution.steps.length !== playable.length) {
-        lastFail = 'steps';
+        if (noteFail('steps')) break;
         continue;
       }
       const check = verifySolution(tiles, solution);
       if (!check.ok) {
-        lastFail = 'verify:' + (check.reason || '');
         globalThis.__rhythm = Object.assign({}, globalThis.__rhythm || {}, { fail: 'verify', reason: check.reason });
+        if (noteFail('verify:' + (check.reason || ''))) break;
         continue;
       }
+      failStreak = 0;
       accepted = {
         solution: solution,
         rhythm: globalThis.__rhythm,
@@ -2862,10 +3488,14 @@ function countFaceSeedQuality(faceSeeds) {
  * 生成 1 颗可入库种子：与预览「按当前形状」同一条 reshufflePlayLevel 路径。
  * 验过即可入库；strict=优秀，其余=合格。
  */
-function tryBuildFaceSeed(level, seedU32) {
+function tryBuildFaceSeed(level, seedU32, ctrl) {
   if (!level || !level.tiles) return null;
+  ctrl = ctrl || {};
   const seedBase = (seedU32 >>> 0) || 1;
-  const out = reshufflePlayLevel(level, 1, makeRng(seedBase));
+  // 种子池默认开启同串早停；预览单次也可开（合格线不变）
+  const out = reshufflePlayLevel(level, 1, makeRng(seedBase), {
+    fastAbort: ctrl.fastAbort !== false
+  });
   if (!out || !out.solution || !out.tiles) return null;
   const pass = out.quality || (globalThis.__rhythm && globalThis.__rhythm.pass) || 'soft';
   const ordered = playableTilesInOrder(out.tiles);
@@ -2958,11 +3588,22 @@ function generateFaceSeedPool(level, count, opts) {
   const seeds = [];
   const seenTypeSig = new Set();
   let wall = 0;
+  let cancelled = false;
   const baseRng = makeRng(((opts.seed != null ? opts.seed : Date.now()) >>> 0) || 1);
+  const seedCtrl = { fastAbort: opts.fastAbort !== false };
+  // 预热几何缓存
+  try {
+    const playable = (level.tiles || []).filter(function (t) { return t && t.type !== 'spitter'; });
+    if (playable.length) getDeadRescueGeo(playable);
+  } catch (_) {}
   while (seeds.length < target && wall < maxWallAttempts) {
+    if (typeof opts.shouldCancel === 'function' && opts.shouldCancel()) {
+      cancelled = true;
+      break;
+    }
     wall++;
     const seedU32 = (Math.floor(baseRng() * 0xffffffff) ^ (wall * 9973)) >>> 0;
-    const entry = tryBuildFaceSeed(level, seedU32 || wall);
+    const entry = tryBuildFaceSeed(level, seedU32 || wall, seedCtrl);
     if (!entry) continue;
     const sig = entry.typeIds.join(',');
     if (seenTypeSig.has(sig)) continue;
@@ -2984,17 +3625,94 @@ function generateFaceSeedPool(level, count, opts) {
     attempts: wall,
     excellent: q.excellent,
     qualified: q.qualified,
-    ok: seeds.length >= Math.min(target, 1)
+    ok: seeds.length >= Math.min(target, 1),
+    cancelled: cancelled
   };
 }
 
 /**
- * 分帧批量。每次 tick 跑 1 次 reshufflePlayLevel（与预览同量级，约数秒一颗）。
+ * 异步种子池：优先 Web Worker（不卡 UI）；失败则回退主线程分帧。
+ * 合格线 / 债 / 生死 opts 与同步路径相同，只减空转、复用几何。
  */
 function generateFaceSeedPoolAsync(level, count, opts) {
   opts = opts || {};
   const target = Math.max(1, Math.min(500, (count != null ? count : FACE_SEED_POOL_DEFAULT) | 0));
-  // 每次 reshuffle 本身已含大量内试；每帧只跑 1 颗，避免卡死
+  const maxWallAttempts = opts.maxWallAttempts != null
+    ? (opts.maxWallAttempts | 0)
+    : target * 8;
+  const seed0 = ((opts.seed != null ? opts.seed : Date.now()) >>> 0) || 1;
+
+  // —— Worker 路径 ——
+  if (typeof Worker !== 'undefined' && opts.useWorker !== false) {
+    try {
+      const workerUrl = opts.workerUrl || 'face-seed-worker.js';
+      const worker = new Worker(workerUrl);
+      let cancelled = false;
+      let finished = false;
+      let handedOff = false;
+      const jobApi = {
+        cancel: function () {
+          cancelled = true;
+          try { worker.postMessage({ type: 'cancel' }); } catch (_) {}
+        }
+      };
+      function finish(res) {
+        if (finished || handedOff) return;
+        finished = true;
+        try { worker.terminate(); } catch (_) {}
+        if (typeof opts.onDone === 'function') opts.onDone(res);
+      }
+      worker.onmessage = function (ev) {
+        const msg = ev.data || {};
+        if (msg.type === 'progress' && typeof opts.onProgress === 'function') {
+          opts.onProgress({
+            have: msg.have | 0,
+            target: msg.target | 0,
+            attempts: msg.attempts | 0,
+            excellent: msg.excellent | 0,
+            qualified: msg.qualified | 0
+          });
+          return;
+        }
+        if (msg.type === 'done') {
+          finish(Object.assign({ cancelled: cancelled || !!msg.cancelled }, msg.result || {}));
+        }
+      };
+      worker.onerror = function () {
+        // Worker 挂了 → 主线程分帧兜底（合格线不变）
+        try { worker.terminate(); } catch (_) {}
+        if (finished || handedOff) return;
+        handedOff = true;
+        const fallback = generateFaceSeedPoolAsyncMainThread(level, target, Object.assign({}, opts, {
+          maxWallAttempts: maxWallAttempts,
+          seed: seed0
+        }));
+        jobApi.cancel = function () {
+          cancelled = true;
+          if (fallback && fallback.cancel) fallback.cancel();
+        };
+      };
+      const tiles = (level.tiles || []).map(function (t) { return Object.assign({}, t); });
+      worker.postMessage({
+        type: 'start',
+        tiles: tiles,
+        target: target,
+        maxWallAttempts: maxWallAttempts,
+        seed: seed0
+      });
+      return jobApi;
+    } catch (e) {
+      // 创建失败走主线程
+    }
+  }
+  return generateFaceSeedPoolAsyncMainThread(level, target, Object.assign({}, opts, {
+    maxWallAttempts: maxWallAttempts,
+    seed: seed0
+  }));
+}
+
+function generateFaceSeedPoolAsyncMainThread(level, target, opts) {
+  opts = opts || {};
   const chunkAttempts = opts.chunkAttempts != null ? Math.max(1, opts.chunkAttempts | 0) : 1;
   const maxWallAttempts = opts.maxWallAttempts != null
     ? (opts.maxWallAttempts | 0)
@@ -3005,6 +3723,11 @@ function generateFaceSeedPoolAsync(level, count, opts) {
   let cancelled = false;
   const baseRng = makeRng(((opts.seed != null ? opts.seed : Date.now()) >>> 0) || 1);
   const geoKey = faceSeedGeoKey(level.tiles);
+  const seedCtrl = { fastAbort: opts.fastAbort !== false };
+  try {
+    const playable = (level.tiles || []).filter(function (t) { return t && t.type !== 'spitter'; });
+    if (playable.length) getDeadRescueGeo(playable);
+  } catch (_) {}
 
   function finish() {
     if (typeof opts.onDone === 'function') {
@@ -3032,7 +3755,7 @@ function generateFaceSeedPoolAsync(level, count, opts) {
       local++;
       wall++;
       const seedU32 = (Math.floor(baseRng() * 0xffffffff) ^ (wall * 9973)) >>> 0;
-      const entry = tryBuildFaceSeed(level, seedU32 || wall);
+      const entry = tryBuildFaceSeed(level, seedU32 || wall, seedCtrl);
       if (!entry) continue;
       const sig = entry.typeIds.join(',');
       if (seenTypeSig.has(sig)) continue;
@@ -4246,6 +4969,7 @@ function computeMinSlots(tiles) {
     tryBuildExcellentFaceSeed: tryBuildExcellentFaceSeed, countFaceSeedQuality: countFaceSeedQuality,
     applyFaceSeedToLevel: applyFaceSeedToLevel, pickRandomFaceSeedEntry: pickRandomFaceSeedEntry,
     generateFaceSeedPool: generateFaceSeedPool, generateFaceSeedPoolAsync: generateFaceSeedPoolAsync,
+    clearDeadRescueGeoCache: clearDeadRescueGeoCache,
     attachFaceSeedPoolToLevel: attachFaceSeedPoolToLevel,
     fillEditorShape: fillEditorShape, generateAndFill: generateAndFill, generateStackFromShape: generateStackFromShape, downloadJSON: downloadJSON,
   };
