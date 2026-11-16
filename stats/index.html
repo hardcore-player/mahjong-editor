@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>每日挑战 · 通过率统计</title>
+<style>
+  :root {
+    --bg: #f3efe6;
+    --card: #fffdf8;
+    --ink: #2a2520;
+    --soft: #6b6256;
+    --line: #d8cdb4;
+    --accent: #b03328;
+    --ok: #237a36;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background: radial-gradient(ellipse at top, #fbf7ec 0%, var(--bg) 55%);
+    padding: 28px 16px 48px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: 1px; }
+  .sub { color: var(--soft); font-size: 13px; margin-bottom: 22px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 28px rgba(80,60,30,.06);
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--soft); }
+  input {
+    min-width: 160px;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+    color: var(--ink);
+  }
+  button {
+    border: 0; border-radius: 8px; padding: 10px 16px;
+    background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: #5c4a3a; }
+  button:disabled { opacity: .55; cursor: default; }
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  @media (max-width: 720px) { .metrics { grid-template-columns: 1fr 1fr; } }
+  .metric {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 14px;
+    background: linear-gradient(180deg, #fffefb, #f7f1e4);
+  }
+  .metric .k { font-size: 12px; color: var(--soft); margin-bottom: 8px; }
+  .metric .v { font-size: 30px; font-weight: 700; }
+  .metric .u { font-size: 12px; color: var(--soft); margin-top: 4px; }
+  .status { font-size: 13px; color: var(--soft); min-height: 1.2em; margin-top: 10px; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--accent); }
+  .hint { font-size: 12px; color: var(--soft); line-height: 1.6; }
+  code { background: #f0e8d8; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>每日挑战 · 通过率</h1>
+    <div class="sub">只统计官方每日挑战，不含闯关 / 对弈。正在玩 = 近 3 分钟内有开局或心跳且尚未通关。</div>
+
+    <div class="card">
+      <div class="row">
+        <label>口令
+          <input id="pass" type="password" placeholder="工作台口令" autocomplete="current-password" />
+        </label>
+        <label>日期（北京时间）
+          <input id="date" type="date" />
+        </label>
+        <button id="btnLoad" type="button">刷新</button>
+        <button id="btnAuto" class="secondary" type="button">自动刷新：关</button>
+      </div>
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="card">
+      <div class="metrics">
+        <div class="metric">
+          <div class="k">今日玩过（人）</div>
+          <div class="v" id="mPlayed">—</div>
+          <div class="u">至少开过一局每日挑战</div>
+        </div>
+        <div class="metric">
+          <div class="k">正在玩（人）</div>
+          <div class="v" id="mPlaying">—</div>
+          <div class="u">近 3 分钟活跃、未通关</div>
+        </div>
+        <div class="metric">
+          <div class="k">已通过（人）</div>
+          <div class="v" id="mPassed">—</div>
+          <div class="u">当日通关每日挑战</div>
+        </div>
+        <div class="metric">
+          <div class="k">通过率</div>
+          <div class="v" id="mRate">—</div>
+          <div class="u">通过人数 ÷ 玩过人数</div>
+        </div>
+      </div>
+      <p class="hint" style="margin-top:14px">
+        本页地址：<code>/stats/</code> · 接口：<code>/api/daily-stats/summary</code>
+      </p>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const PASS_KEY = 'dailyStatsPass';
+  const API = '/api/daily-stats/summary';
+  let autoTimer = null;
+
+  function todayBeijingInput() {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+  }
+
+  function setStatus(text, cls) {
+    const el = $('status');
+    el.textContent = text || '';
+    el.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  function fill(data) {
+    $('mPlayed').textContent = data.played != null ? data.played : '—';
+    $('mPlaying').textContent = data.playingNow != null ? data.playingNow : '—';
+    $('mPassed').textContent = data.passed != null ? data.passed : '—';
+    $('mRate').textContent = data.passRate != null ? (data.passRate + '%') : '—';
+  }
+
+  async function load() {
+    const pass = $('pass').value.trim();
+    const date = $('date').value;
+    if (!pass) {
+      setStatus('请先填口令', 'err');
+      return;
+    }
+    localStorage.setItem(PASS_KEY, pass);
+    $('btnLoad').disabled = true;
+    setStatus('加载中…');
+    try {
+      const qs = new URLSearchParams();
+      if (date) qs.set('date', date);
+      qs.set('pass', pass);
+      const r = await fetch(API + '?' + qs.toString(), {
+        headers: {
+          'X-Workbench-Pass': pass,
+          'X-Daily-Stats-Pass': pass,
+        },
+        cache: 'no-store',
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        fill({});
+        setStatus((j && j.error) || ('HTTP ' + r.status), 'err');
+        return;
+      }
+      fill(j);
+      setStatus(
+        '日期 ' + j.date + ' · 更新 ' + String(j.updatedAt || '').replace('T', ' ').replace(/\.\d+Z$/, ' UTC'),
+        'ok'
+      );
+    } catch (e) {
+      fill({});
+      setStatus('请求失败：' + (e && e.message ? e.message : e), 'err');
+    } finally {
+      $('btnLoad').disabled = false;
+    }
+  }
+
+  function toggleAuto() {
+    if (autoTimer) {
+      clearInterval(autoTimer);
+      autoTimer = null;
+      $('btnAuto').textContent = '自动刷新：关';
+      return;
+    }
+    $('btnAuto').textContent = '自动刷新：开（15s）';
+    void load();
+    autoTimer = setInterval(() => { void load(); }, 15000);
+  }
+
+  $('pass').value = localStorage.getItem(PASS_KEY) || '';
+  $('date').value = todayBeijingInput();
+  $('btnLoad').addEventListener('click', () => { void load(); });
+  $('btnAuto').addEventListener('click', toggleAuto);
+  $('pass').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') void load();
+  });
+})();
+</script>
+</body>
+</html>

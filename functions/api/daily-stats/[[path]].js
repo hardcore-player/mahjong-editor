@@ -1,10 +1,10 @@
 /**
  * 每日挑战通过率统计（Cloudflare Pages Function）
  *
- * 路由：
- *   POST /daily-stats/event     客户端上报 start / heartbeat / pass / leave（无需口令）
- *   GET  /daily-stats/summary?date=YYYY-MM-DD  管理端汇总（需口令）
- *   GET  /daily-stats/           同 summary（今天）
+ * 路由（挂在 /api 下，避免和统计页 /stats、/daily-stats.html 抢路径）：
+ *   POST /api/daily-stats/event
+ *   GET  /api/daily-stats/summary?date=YYYY-MM-DD
+ *   GET  /api/daily-stats/
  *
  * 环境变量：
  *   WORKBENCH_PASSWORD 或 DAILY_STATS_PASSWORD — 管理读取口令
@@ -47,15 +47,23 @@ function beijingDate(d = new Date()) {
   }).format(d);
 }
 
-function checkAdmin(headers, env) {
+function checkAdmin(request, env) {
   const expected = env.DAILY_STATS_PASSWORD || env.WORKBENCH_PASSWORD;
   if (!expected) return { ok: false, msg: '未配置 DAILY_STATS_PASSWORD / WORKBENCH_PASSWORD' };
+  const headers = request.headers;
+  const url = new URL(request.url);
   const got =
     headers.get('x-daily-stats-pass') ||
     headers.get('X-Daily-Stats-Pass') ||
     headers.get('x-workbench-pass') ||
-    headers.get('X-Workbench-Pass');
-  if (!got || got !== expected) return { ok: false, msg: '口令错误' };
+    headers.get('X-Workbench-Pass') ||
+    url.searchParams.get('pass') ||
+    '';
+  // 也接受 Authorization: Bearer <口令>
+  const auth = headers.get('authorization') || headers.get('Authorization') || '';
+  const bearer = auth.toLowerCase().indexOf('bearer ') === 0 ? auth.slice(7).trim() : '';
+  const pass = got || bearer;
+  if (!pass || pass !== expected) return { ok: false, msg: '口令错误' };
   return { ok: true };
 }
 
@@ -203,7 +211,7 @@ function summarize(records, now = Date.now()) {
 }
 
 async function handleSummary(request, env, dateParam) {
-  const gate = checkAdmin(request.headers, env);
+  const gate = checkAdmin(request, env);
   if (!gate.ok) return json(401, { ok: false, error: gate.msg });
 
   const store = kv(env);
@@ -237,10 +245,9 @@ export async function onRequest(context) {
   }
 
   const url = new URL(request.url);
-  // path after /daily-stats/
+  // /api/daily-stats[/event|/summary|/today]
   const parts = url.pathname.replace(/^\/+/, '').split('/').filter(Boolean);
-  // ["daily-stats"] | ["daily-stats","event"] | ["daily-stats","summary"]
-  const action = (parts[1] || '').toLowerCase();
+  const action = (parts[2] || '').toLowerCase();
 
   try {
     if (request.method === 'POST' && (action === 'event' || action === '')) {
@@ -249,7 +256,11 @@ export async function onRequest(context) {
     if (request.method === 'GET' && (action === 'summary' || action === '' || action === 'today')) {
       return await handleSummary(request, env, url.searchParams.get('date'));
     }
-    return json(404, { ok: false, error: 'not found', hint: 'POST /daily-stats/event · GET /daily-stats/summary?date=' });
+    return json(404, {
+      ok: false,
+      error: 'not found',
+      hint: 'POST /api/daily-stats/event · GET /api/daily-stats/summary?date=',
+    });
   } catch (e) {
     return json(500, { ok: false, error: e && e.message ? e.message : String(e) });
   }
