@@ -51,6 +51,7 @@ http.createServer((req, res) => {
   console.log('  首页:      http://localhost:' + port + '/');
   console.log('  关卡编辑器: http://localhost:' + port + '/editor/');
   console.log('  工作台:    http://localhost:' + port + '/workbench.html');
+  console.log('  日挑战统计: http://localhost:' + port + '/daily-stats.html');
   console.log('  游戏 demo: http://localhost:' + port + '/demo/');
   console.log('');
   console.log('  按 Ctrl+C 停止服务器');
