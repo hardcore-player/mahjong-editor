@@ -1,16 +1,14 @@
 /**
- * 每日挑战通过率统计（Cloudflare Pages Function）
+ * 游戏统计（Cloudflare Pages Function）
+ * 覆盖：每日挑战 + 闯关 + 道具（按关细分）。不含对弈。
  *
  * 路由：
  *   POST /api/daily-stats/event
  *   GET  /api/daily-stats/summary?date=YYYY-MM-DD&pass=...
  *
- * 存储优先级：
- *   1) KV 绑定 DAILY_STATS 或 LEVELS
- *   2) 回退 GitHub（复用工作台 GITHUB_TOKEN / GITHUB_REPO）
- *        文件：data/daily-stats/YYYY-MM-DD.json
- *
- * 口令：DAILY_STATS_PASSWORD 或 WORKBENCH_PASSWORD
+ * event: start|heartbeat|pass|leave|tool
+ * mode:  daily|campaign
+ * tool:  undo|hint|shuffle|magnet（仅 event=tool）
  */
 
 const ACTIVE_MS = 3 * 60 * 1000;
@@ -261,19 +259,99 @@ async function listDevices(env, date) {
   throw new Error('无可用存储：请绑定 KV，或配置 GITHUB_TOKEN + GITHUB_REPO');
 }
 
-function summarize(records, now = Date.now()) {
+const TOOLS = ['undo', 'hint', 'shuffle', 'magnet'];
+const MODES = ['daily', 'campaign'];
+
+function emptyMode() {
+  return {
+    firstStartAt: null,
+    lastSeenAt: null,
+    passedAt: null,
+    leftAt: null,
+    levelId: null,
+    status: 'unknown',
+    levelsPlayed: {},
+    levelsPassed: {},
+  };
+}
+
+function emptyTools() {
+  const o = {};
+  for (const t of TOOLS) o[t] = { total: 0, byLevel: {} };
+  return o;
+}
+
+/** 兼容旧版扁平字段 → modes.daily */
+function normalizeRec(rec, deviceId, date) {
+  const base = rec && typeof rec === 'object' ? rec : {};
+  const out = {
+    deviceId: base.deviceId || deviceId,
+    date: base.date || date,
+    modes: base.modes && typeof base.modes === 'object' ? base.modes : {},
+    tools: base.tools && typeof base.tools === 'object' ? base.tools : emptyTools(),
+  };
+  if (!out.modes.daily && !out.modes.campaign && base.firstStartAt) {
+    out.modes.daily = {
+      firstStartAt: base.firstStartAt || null,
+      lastSeenAt: base.lastSeenAt || null,
+      passedAt: base.passedAt || null,
+      leftAt: base.leftAt || null,
+      levelId: base.levelId != null ? base.levelId : null,
+      status: base.status || 'unknown',
+      levelsPlayed: {},
+      levelsPassed: {},
+    };
+  }
+  for (const m of MODES) {
+    if (!out.modes[m]) out.modes[m] = emptyMode();
+    if (!out.modes[m].levelsPlayed) out.modes[m].levelsPlayed = {};
+    if (!out.modes[m].levelsPassed) out.modes[m].levelsPassed = {};
+  }
+  for (const t of TOOLS) {
+    if (!out.tools[t]) out.tools[t] = { total: 0, byLevel: {} };
+    if (!out.tools[t].byLevel) out.tools[t].byLevel = {};
+  }
+  return out;
+}
+
+function summarizeMode(records, mode, now = Date.now()) {
   let played = 0;
   let passed = 0;
   let playingNow = 0;
-  for (const r of records) {
-    if (!r || !r.firstStartAt) continue;
+  for (const raw of records) {
+    const r = normalizeRec(raw, raw && raw.deviceId, raw && raw.date);
+    const m = r.modes[mode];
+    if (!m || !m.firstStartAt) continue;
     played++;
-    if (r.passedAt) passed++;
-    const recent = r.lastSeenAt && now - r.lastSeenAt <= ACTIVE_MS;
-    if (recent && r.status === 'playing' && !r.passedAt) playingNow++;
+    if (m.passedAt) passed++;
+    const recent = m.lastSeenAt && now - m.lastSeenAt <= ACTIVE_MS;
+    if (recent && m.status === 'playing' && !m.passedAt) playingNow++;
   }
   const passRate = played > 0 ? Math.round((passed / played) * 1000) / 10 : 0;
   return { played, playingNow, passed, passRate };
+}
+
+function summarizeTools(records) {
+  const totals = { undo: 0, hint: 0, shuffle: 0, magnet: 0 };
+  const byLevel = {};
+  for (const raw of records) {
+    const r = normalizeRec(raw, raw && raw.deviceId, raw && raw.date);
+    for (const t of TOOLS) {
+      const block = r.tools[t] || { total: 0, byLevel: {} };
+      totals[t] += block.total | 0;
+      const levels = block.byLevel || {};
+      for (const lv of Object.keys(levels)) {
+        if (!byLevel[lv]) byLevel[lv] = { undo: 0, hint: 0, shuffle: 0, magnet: 0, total: 0 };
+        const n = levels[lv] | 0;
+        byLevel[lv][t] += n;
+        byLevel[lv].total += n;
+      }
+    }
+  }
+  const levelRows = Object.keys(byLevel)
+    .map((k) => ({ levelId: Number(k), ...byLevel[k] }))
+    .sort((a, b) => a.levelId - b.levelId);
+  return { totals, byLevel: levelRows };
 }
 
 async function handleEvent(request, env) {
@@ -288,8 +366,12 @@ async function handleEvent(request, env) {
   }
 
   const event = String(body.event || '').toLowerCase();
-  if (!['start', 'heartbeat', 'pass', 'leave'].includes(event)) {
-    return json(400, { ok: false, error: 'event must be start|heartbeat|pass|leave' });
+  if (!['start', 'heartbeat', 'pass', 'leave', 'tool'].includes(event)) {
+    return json(400, { ok: false, error: 'event must be start|heartbeat|pass|leave|tool' });
+  }
+  const playMode = String(body.mode || 'daily').toLowerCase();
+  if (!MODES.includes(playMode)) {
+    return json(400, { ok: false, error: 'mode must be daily|campaign' });
   }
   const deviceId = sanitizeDeviceId(body.deviceId);
   if (!deviceId) return json(400, { ok: false, error: 'bad deviceId' });
@@ -299,6 +381,10 @@ async function handleEvent(request, env) {
     body.levelId != null && Number.isFinite(Number(body.levelId))
       ? Math.floor(Number(body.levelId))
       : null;
+  const tool = String(body.tool || '').toLowerCase();
+  if (event === 'tool' && TOOLS.indexOf(tool) < 0) {
+    return json(400, { ok: false, error: 'tool must be undo|hint|shuffle|magnet' });
+  }
 
   let ctx;
   try {
@@ -313,37 +399,39 @@ async function handleEvent(request, env) {
     });
   }
 
-  let rec = ctx.rec || {
-    deviceId,
-    date,
-    firstStartAt: null,
-    lastSeenAt: null,
-    passedAt: null,
-    leftAt: null,
-    levelId: null,
-    status: 'unknown',
-  };
-  if (levelId != null) rec.levelId = levelId;
-  rec.lastSeenAt = now;
+  const rec = normalizeRec(ctx.rec, deviceId, date);
+  const m = rec.modes[playMode];
+  m.lastSeenAt = now;
+  if (levelId != null) m.levelId = levelId;
 
-  if (event === 'start') {
-    if (!rec.firstStartAt) rec.firstStartAt = now;
-    if (!rec.passedAt) {
-      rec.status = 'playing';
-      rec.leftAt = null;
+  if (event === 'start' || event === 'heartbeat') {
+    if (!m.firstStartAt) m.firstStartAt = now;
+    if (!m.passedAt) {
+      m.status = 'playing';
+      m.leftAt = null;
     }
-  } else if (event === 'heartbeat') {
-    if (!rec.firstStartAt) rec.firstStartAt = now;
-    if (!rec.passedAt && rec.status !== 'left') rec.status = 'playing';
+    if (event === 'start' && levelId != null) {
+      const k = String(levelId);
+      m.levelsPlayed[k] = (m.levelsPlayed[k] | 0) + 1;
+    }
   } else if (event === 'pass') {
-    if (!rec.firstStartAt) rec.firstStartAt = now;
-    if (!rec.passedAt) rec.passedAt = now;
-    rec.status = 'passed';
-  } else if (event === 'leave') {
-    if (!rec.passedAt) {
-      rec.status = 'left';
-      rec.leftAt = now;
+    if (!m.firstStartAt) m.firstStartAt = now;
+    if (!m.passedAt) m.passedAt = now;
+    m.status = 'passed';
+    if (levelId != null) {
+      const k = String(levelId);
+      m.levelsPassed[k] = (m.levelsPassed[k] | 0) + 1;
     }
+  } else if (event === 'leave') {
+    if (!m.passedAt) {
+      m.status = 'left';
+      m.leftAt = now;
+    }
+  } else if (event === 'tool') {
+    const block = rec.tools[tool];
+    block.total = (block.total | 0) + 1;
+    const lv = levelId != null ? String(levelId) : '0';
+    block.byLevel[lv] = (block.byLevel[lv] | 0) + 1;
   }
 
   try {
@@ -351,7 +439,14 @@ async function handleEvent(request, env) {
   } catch (e) {
     return json(503, { ok: false, error: e.message || String(e) });
   }
-  return json(200, { ok: true, date, event, status: rec.status, backend: ctx.mode });
+  return json(200, {
+    ok: true,
+    date,
+    event,
+    mode: playMode,
+    status: m.status,
+    backend: ctx.mode,
+  });
 }
 
 async function handleSummary(request, env, dateParam) {
@@ -365,17 +460,23 @@ async function handleSummary(request, env, dateParam) {
   } catch (e) {
     return json(503, { ok: false, error: e.message || String(e) });
   }
-  const s = summarize(listed.records);
+  const daily = summarizeMode(listed.records, 'daily');
+  const campaign = summarizeMode(listed.records, 'campaign');
+  const tools = summarizeTools(listed.records);
   return json(200, {
     ok: true,
     date,
-    played: s.played,
-    playingNow: s.playingNow,
-    passed: s.passed,
-    passRate: s.passRate,
+    // 兼容旧字段 = 每日挑战
+    played: daily.played,
+    playingNow: daily.playingNow,
+    passed: daily.passed,
+    passRate: daily.passRate,
+    daily,
+    campaign,
+    tools,
     activeWindowSec: ACTIVE_MS / 1000,
     backend: listed.backend,
-    note: '仅统计官方每日挑战；不含闯关/对弈',
+    note: '每日挑战 + 闯关 + 道具（按关）；不含对弈',
     updatedAt: new Date().toISOString(),
   });
 }
