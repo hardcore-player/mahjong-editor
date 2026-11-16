@@ -738,7 +738,7 @@
       </div>
       <div class="gh-item">
         <div class="gh-title">日挑战花色种子池</div>
-        <div class="gh-desc">离线预计算约 100 颗花色。前期牺牲色+2债必进槽（搭档很晚才露）；中期生死牌（生牌去盖后仍侧堵，偷看也点不了）+障碍进槽。贪心卡中后分界、解法仍通。strict→优秀，其余→合格；开局优先抽优秀。</div>
+        <div class="gh-desc">离线预计算约 100 颗花色。前期牺牲色+2债必进槽（搭档很晚才露）；中期生死牌（生牌去盖后仍侧堵，偷看也点不了）+障碍进槽。贪心卡中后分界、解法仍通。strict→优秀，其余→合格；开局优先抽优秀。下载关卡时 solution 会另存为 *.solutions.json 证据库（不进客户端）。</div>
       </div>
     </div>
     <div class="gen-help-pop" id="scoreHelpPop">
@@ -1486,7 +1486,7 @@
 </div>
 
 <script src="manual-rules.js"></script>
-<script src="generator.js?v=561"></script>
+<script src="generator.js?v=562"></script>
 <script>
 // ========== 配置：编辑器坐标显示范围 ==========
 // 横向固定 12 个子格 = 6 个麻将位（每张牌占 2 子格）
@@ -3547,23 +3547,36 @@ function generateStackFromCurrent() {
   } catch (e) { setGenStatus('<span class="bad">失败: ' + e.message + '</span>'); }
 }
 
+/** 下载客户端关卡；若有种子池，同时另存通关证据库（不含进客户端 JSON） */
+function downloadLevelPayload(level, baseName) {
+  if (!level) return;
+  let payload = level;
+  let bank = null;
+  const geoKey = level.faceSeedGeoKey || (GEN.faceSeedGeoKey && GEN.faceSeedGeoKey(level.tiles));
+  if (Array.isArray(level.faceSeeds) && level.faceSeeds.length > 0) {
+    payload = GEN.attachFaceSeedPoolToLevel(level, level.faceSeeds, geoKey);
+    bank = GEN.buildFaceSeedSolutionBank({
+      sourceFile: baseName,
+      levelId: level.levelId != null ? level.levelId : null,
+      faceSeedGeoKey: geoKey,
+      faceSeeds: level.faceSeeds
+    });
+  }
+  GEN.downloadJSON(payload, baseName);
+  if (bank && bank.entryCount > 0) {
+    const solName = String(baseName).replace(/\.json$/i, '') + '.solutions.json';
+    setTimeout(function () { GEN.downloadJSON(bank, solName); }, 120);
+  }
+}
+
 function downloadCurrentLevel() {
   if (!currentLevel) return;
   const d = currentLevel._difficulty;
-  // 有种子池时导出「几何 + faceSeeds」形态（typeId 清空，开局再抽）
-  let payload = currentLevel;
-  if (Array.isArray(currentLevel.faceSeeds) && currentLevel.faceSeeds.length > 0) {
-    payload = GEN.attachFaceSeedPoolToLevel(
-      currentLevel,
-      currentLevel.faceSeeds,
-      currentLevel.faceSeedGeoKey || GEN.faceSeedGeoKey(currentLevel.tiles)
-    );
-  }
-  const seedN = Array.isArray(payload.faceSeeds) ? payload.faceSeeds.length : 0;
+  const seedN = Array.isArray(currentLevel.faceSeeds) ? currentLevel.faceSeeds.length : 0;
   const name = seedN
     ? `level_${Date.now()}_${d?.score ?? 0}分_${seedN}seeds.json`
     : `level_${Date.now()}_${d?.score ?? 0}.json`;
-  GEN.downloadJSON(payload, name);
+  downloadLevelPayload(currentLevel, name);
 }
 
 let _faceSeedJob = null;
@@ -4037,24 +4050,20 @@ function previewResult(i) {
 function downloadResult(i) {
   const lv = resultsList[i];
   if (!lv) return;
-  let payload = lv;
-  if (Array.isArray(lv.faceSeeds) && lv.faceSeeds.length > 0) {
-    payload = GEN.attachFaceSeedPoolToLevel(
-      lv,
-      lv.faceSeeds,
-      lv.faceSeedGeoKey || GEN.faceSeedGeoKey(lv.tiles)
-    );
-  }
-  const seedN = Array.isArray(payload.faceSeeds) ? payload.faceSeeds.length : 0;
+  const seedN = Array.isArray(lv.faceSeeds) ? lv.faceSeeds.length : 0;
   const name = seedN
     ? `level_${lv._difficulty?.score ?? 0}分_#${i + 1}_${seedN}seeds.json`
     : `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`;
-  GEN.downloadJSON(payload, name);
+  downloadLevelPayload(lv, name);
 }
 
 function downloadAllResults() {
   resultsList.forEach((lv, i) => {
-    setTimeout(() => GEN.downloadJSON(lv, `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`), i * 300);
+    const seedN = Array.isArray(lv.faceSeeds) ? lv.faceSeeds.length : 0;
+    const name = seedN
+      ? `level_${lv._difficulty?.score ?? 0}分_#${i + 1}_${seedN}seeds.json`
+      : `level_${lv._difficulty?.score ?? 0}分_#${i + 1}.json`;
+    setTimeout(() => downloadLevelPayload(lv, name), i * 400);
   });
 }
 

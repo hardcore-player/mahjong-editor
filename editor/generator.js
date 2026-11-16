@@ -3782,10 +3782,56 @@ function generateFaceSeedPoolAsyncMainThread(level, target, opts) {
   };
 }
 
+/**
+ * 客户端导出用：去掉每颗种子的 solution（通关步骤另存证据库，不进安装包）。
+ * 编辑器内存里的完整种子可继续留着做预览校验。
+ */
+function cloneFaceSeedsWithoutSolutions(faceSeeds) {
+  return (faceSeeds || []).map(function (e) {
+    if (!e || typeof e !== 'object') return e;
+    const o = Object.assign({}, e);
+    delete o.solution;
+    return o;
+  });
+}
+
+/**
+ * 从完整种子池抽出通关证据库：用 源文件/关卡 + faceSeedGeoKey + seed 一一对应。
+ * 不进客户端；仅内部留存，应对「到底有没有通关路径」的质疑。
+ */
+function buildFaceSeedSolutionBank(opts) {
+  opts = opts || {};
+  const faceSeeds = opts.faceSeeds || [];
+  const geoKey = opts.faceSeedGeoKey || opts.geoKey || '';
+  const entries = [];
+  for (let i = 0; i < faceSeeds.length; i++) {
+    const e = faceSeeds[i];
+    if (!e || !e.solution || !Array.isArray(e.solution.steps) || !e.solution.steps.length) continue;
+    entries.push({
+      seed: (e.seed >>> 0) || (i + 1),
+      quality: typeof e.quality === 'string' ? e.quality : undefined,
+      tileCount: Array.isArray(e.tileIds) ? e.tileIds.length : (Array.isArray(e.typeIds) ? e.typeIds.length : undefined),
+      solution: e.solution
+    });
+  }
+  return {
+    schema: 'face-seed-solutions/v1',
+    sourceFile: opts.sourceFile || null,
+    levelId: opts.levelId != null ? opts.levelId : null,
+    faceSeedGeoKey: geoKey,
+    seedCount: faceSeeds.length,
+    entryCount: entries.length,
+    createdAt: opts.createdAt || new Date().toISOString(),
+    note: '内部通关证据：按 faceSeedGeoKey + seed 对应关卡种子；勿打进客户端包。',
+    entries: entries
+  };
+}
+
 function attachFaceSeedPoolToLevel(level, faceSeeds, geoKey) {
   if (!level) return null;
   const out = Object.assign({}, level);
-  out.faceSeeds = (faceSeeds || []).slice();
+  // 给客户端的 JSON：花色种子保留，通关步骤剥离
+  out.faceSeeds = cloneFaceSeedsWithoutSolutions(faceSeeds);
   out.faceSeedGeoKey = geoKey || faceSeedGeoKey(level.tiles);
   out.playTag = DAILY_CHALLENGE_FACE_PLAY_TAG;
   // 导出给客户端时不要绑死某一颗：开局再随机抽
@@ -4970,6 +5016,8 @@ function computeMinSlots(tiles) {
     applyFaceSeedToLevel: applyFaceSeedToLevel, pickRandomFaceSeedEntry: pickRandomFaceSeedEntry,
     generateFaceSeedPool: generateFaceSeedPool, generateFaceSeedPoolAsync: generateFaceSeedPoolAsync,
     clearDeadRescueGeoCache: clearDeadRescueGeoCache,
+    cloneFaceSeedsWithoutSolutions: cloneFaceSeedsWithoutSolutions,
+    buildFaceSeedSolutionBank: buildFaceSeedSolutionBank,
     attachFaceSeedPoolToLevel: attachFaceSeedPoolToLevel,
     fillEditorShape: fillEditorShape, generateAndFill: generateAndFill, generateStackFromShape: generateStackFromShape, downloadJSON: downloadJSON,
   };
